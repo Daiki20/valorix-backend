@@ -13,7 +13,6 @@ function callOpenAI(messages, max_tokens = 1200) {
       max_tokens,
       response_format: { type: 'json_object' },
     })
-
     const options = {
       hostname: 'api.openai.com',
       path: '/v1/chat/completions',
@@ -24,23 +23,15 @@ function callOpenAI(messages, max_tokens = 1200) {
         'Content-Length': Buffer.byteLength(payload),
       },
     }
-
     const req = https.request(options, (res) => {
       let data = ''
       res.on('data', chunk => { data += chunk })
       res.on('end', () => {
-        if (res.statusCode !== 200) {
-          reject(new Error(`OpenAI ${res.statusCode}: ${data}`))
-          return
-        }
-        try {
-          resolve(JSON.parse(data).choices[0].message.content)
-        } catch (e) {
-          reject(new Error('OpenAI parse error'))
-        }
+        if (res.statusCode !== 200) { reject(new Error(`OpenAI ${res.statusCode}: ${data}`)); return }
+        try { resolve(JSON.parse(data).choices[0].message.content) }
+        catch { reject(new Error('OpenAI parse error')) }
       })
     })
-
     req.on('error', reject)
     req.write(payload)
     req.end()
@@ -64,7 +55,7 @@ function rapidGet(path, params = {}) {
       let data = ''
       res.on('data', chunk => { data += chunk })
       res.on('end', () => {
-        try { resolve(JSON.parse(data)) } catch { reject(new Error('RapidAPI parse error')) }
+        try { resolve(JSON.parse(data)) } catch { reject(new Error('parse error')) }
       })
     })
     req.on('error', reject)
@@ -72,143 +63,131 @@ function rapidGet(path, params = {}) {
   })
 }
 
-// Search team by name → return team object
-async function searchTeam(name) {
-  const res = await rapidGet('/football-search-teams', { query: name })
-  return res?.response?.[0] || null
+function normalize(s) {
+  return (s || '').toLowerCase().replace(/[^a-zа-яё0-9]/gi, '')
 }
 
-// Get upcoming fixtures for a team → find match vs opponent
-async function findFixture(homeTeamId, awayTeamId) {
-  const res = await rapidGet('/football-fixtures-team', { teamId: homeTeamId, next: 10 })
-  const fixtures = res?.response || []
-  return fixtures.find(f =>
-    f.teams?.away?.id === awayTeamId || f.teams?.home?.id === awayTeamId
-  ) || null
-}
-
-// Get lineups for a fixture
-async function fetchLineups(fixtureId) {
-  const res = await rapidGet('/football-fixture-lineups', { fixtureId })
-  const lineups = res?.response || []
-  const result = {}
-  for (const side of lineups) {
-    const teamName = side.team?.name
-    if (!teamName) continue
-    result[teamName] = {
-      formation: side.formation || null,
-      startXI: (side.startXI || []).map(p => p.player?.name).filter(Boolean),
-      substitutes: (side.substitutes || []).map(p => p.player?.name).filter(Boolean),
-    }
+function fuzzyMatch(a, b) {
+  if (!a || !b) return false
+  if (a === b) return true
+  if (a.includes(b) || b.includes(a)) return true
+  if (Math.abs(a.length - b.length) > 5) return false
+  let diff = 0
+  const shorter = a.length < b.length ? a : b
+  const longer = a.length < b.length ? b : a
+  for (let i = 0; i < shorter.length; i++) {
+    if (shorter[i] !== longer[i]) diff++
   }
-  return result
+  return diff <= 3
 }
 
-// Get team's standing in the league
-async function fetchStanding(teamId, leagueId, season) {
-  const res = await rapidGet('/football-league-standings', { leagueId, season })
-  const standings = res?.response?.[0]?.league?.standings?.[0] || []
-  return standings.find(s => s.team?.id === teamId) || null
+function dateStr(offsetDays = 0) {
+  const d = new Date()
+  d.setDate(d.getDate() + offsetDays)
+  return d.toISOString().split('T')[0].replace(/-/g, '') // YYYYMMDD
 }
 
-// Get last 5 results for a team
-async function fetchRecentForm(teamId) {
-  const res = await rapidGet('/football-fixtures-team', { teamId, last: 5 })
-  const fixtures = res?.response || []
-  return fixtures.map(f => {
-    const isHome = f.teams?.home?.id === teamId
-    const homeGoals = f.goals?.home
-    const awayGoals = f.goals?.away
-    if (homeGoals === null || awayGoals === null) return null
-    if (isHome) return homeGoals > awayGoals ? 'W' : homeGoals < awayGoals ? 'L' : 'D'
-    return awayGoals > homeGoals ? 'W' : awayGoals < homeGoals ? 'L' : 'D'
-  }).filter(Boolean)
+// Find match event by team names across today + next 3 days
+async function findEvent(home, away) {
+  const homeNorm = normalize(home)
+  const awayNorm = normalize(away)
+
+  for (let i = 0; i <= 3; i++) {
+    try {
+      const res = await rapidGet('/football-get-matches-by-date', { date: dateStr(i) })
+      const matches = res?.response || []
+      const found = matches.find(m => {
+        const h = normalize(m.homeTeam?.name || m.home?.name || m.homeName || '')
+        const a = normalize(m.awayTeam?.name || m.away?.name || m.awayName || '')
+        return fuzzyMatch(h, homeNorm) && fuzzyMatch(a, awayNorm)
+      })
+      if (found) return found
+    } catch { continue }
+  }
+  return null
 }
 
-// Get injured players for a team
-async function fetchInjuries(teamId) {
-  const res = await rapidGet('/football-team-players', { teamId })
+// Get starting lineup for home team
+async function fetchHomeLineup(eventId) {
+  const res = await rapidGet('/football-get-hometeam-lineup', { eventId })
   const players = res?.response || []
   return players
-    .filter(p => p.injured === true)
-    .map(p => p.name)
+    .filter(p => p.lineup === true || p.isStarting === true || p.starting === true)
+    .map(p => p.name || p.playerName)
     .filter(Boolean)
 }
 
-// Main context endpoint — returns everything in one call
+// Get starting lineup for away team
+async function fetchAwayLineup(eventId) {
+  const res = await rapidGet('/football-get-awayteam-lineup', { eventId })
+  const players = res?.response || []
+  return players
+    .filter(p => p.lineup === true || p.isStarting === true || p.starting === true)
+    .map(p => p.name || p.playerName)
+    .filter(Boolean)
+}
+
+// Get standings by league ID
+async function fetchStandings(leagueId) {
+  const res = await rapidGet('/football-get-standing-all', { leagueId })
+  const standings = res?.response || []
+  return standings
+}
+
+function extractTeamStanding(standings, teamName) {
+  const norm = normalize(teamName)
+  return standings.find(s => fuzzyMatch(normalize(s.team?.name || s.teamName || ''), norm)) || null
+}
+
 router.post('/context', authenticate, async (req, res) => {
-  const { home, away } = req.body
+  const { home, away, leagueId } = req.body
   if (!home || !away) return res.status(400).json({ error: 'home and away required' })
   if (!process.env.RAPIDAPI_KEY) return res.json({})
 
+  const result = {
+    homeLineup: [],
+    awayLineup: [],
+    homeStanding: null,
+    awayStanding: null,
+    formation: { home: null, away: null },
+  }
+
   try {
-    // Step 1: find both teams
-    const [homeTeam, awayTeam] = await Promise.all([
-      searchTeam(home).catch(() => null),
-      searchTeam(away).catch(() => null),
-    ])
+    const event = await findEvent(home, away).catch(() => null)
 
-    const result = {
-      homeInjured: [],
-      awayInjured: [],
-      homeForm: [],
-      awayForm: [],
-      homeStanding: null,
-      awayStanding: null,
-      lineups: {},
-    }
+    if (event) {
+      const eventId = event.id || event.eventId || event.matchId
 
-    if (!homeTeam?.id || !awayTeam?.id) return res.json(result)
-
-    const homeId = homeTeam.id
-    const awayId = awayTeam.id
-
-    // Step 2: get fixture + injuries + form in parallel
-    const [fixture, homeInjured, awayInjured, homeForm, awayForm] = await Promise.all([
-      findFixture(homeId, awayId).catch(() => null),
-      fetchInjuries(homeId).catch(() => []),
-      fetchInjuries(awayId).catch(() => []),
-      fetchRecentForm(homeId).catch(() => []),
-      fetchRecentForm(awayId).catch(() => []),
-    ])
-
-    result.homeInjured = homeInjured
-    result.awayInjured = awayInjured
-    result.homeForm = homeForm
-    result.awayForm = awayForm
-
-    if (fixture) {
-      const fixtureId = fixture.fixture?.id
-      const leagueId = fixture.league?.id
-      const season = fixture.league?.season
-
-      // Step 3: get lineups + standings in parallel
-      const [lineups, homeStanding, awayStanding] = await Promise.all([
-        fixtureId ? fetchLineups(fixtureId).catch(() => ({})) : {},
-        leagueId ? fetchStanding(homeId, leagueId, season).catch(() => null) : null,
-        leagueId ? fetchStanding(awayId, leagueId, season).catch(() => null) : null,
+      // Get lineups + standings in parallel
+      const eventLeagueId = event.leagueId || event.league?.id || leagueId
+      const [homeLineup, awayLineup, standings] = await Promise.all([
+        eventId ? fetchHomeLineup(eventId).catch(() => []) : [],
+        eventId ? fetchAwayLineup(eventId).catch(() => []) : [],
+        eventLeagueId ? fetchStandings(eventLeagueId).catch(() => []) : [],
       ])
 
-      result.lineups = lineups
-      result.homeStanding = homeStanding
-      result.awayStanding = awayStanding
+      result.homeLineup = homeLineup
+      result.awayLineup = awayLineup
+      result.formation.home = event.homeFormation || event.home?.formation || null
+      result.formation.away = event.awayFormation || event.away?.formation || null
+
+      if (standings.length) {
+        result.homeStanding = extractTeamStanding(standings, home)
+        result.awayStanding = extractTeamStanding(standings, away)
+      }
     }
 
     res.json(result)
   } catch (err) {
     console.error('Context error:', err.message)
-    res.json({})
+    res.json(result)
   }
 })
 
 router.post('/chat', authenticate, async (req, res) => {
   const { messages, max_tokens = 1200 } = req.body
-  if (!Array.isArray(messages)) {
-    return res.status(400).json({ error: 'messages required' })
-  }
-  if (!process.env.OPENAI_API_KEY) {
-    return res.status(503).json({ error: 'OpenAI API key not configured' })
-  }
+  if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages required' })
+  if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'OpenAI API key not configured' })
   try {
     const content = await callOpenAI(messages, max_tokens)
     res.json({ content })
