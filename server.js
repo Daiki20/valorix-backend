@@ -23,10 +23,14 @@ app.use(helmet({
 // ── CORS ──────────────────────────────────────────────────
 app.use(cors({
   origin: (origin, cb) => {
-    const allowed = process.env.FRONTEND_URL || 'http://localhost:5173'
+    const base = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '')
+    const withoutWww = base.replace('://www.', '://')
+    const withWww = withoutWww.replace('://', '://www.')
     if (
       !origin ||
-      origin === allowed ||
+      origin === base ||
+      origin === withoutWww ||
+      origin === withWww ||
       /^http:\/\/localhost:\d+$/.test(origin) ||
       /^https:\/\/[\w-]+(\.vercel\.app)$/.test(origin)
     ) {
