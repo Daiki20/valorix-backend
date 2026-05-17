@@ -1,7 +1,7 @@
 const express = require('express')
 const router = express.Router()
 const https = require('https')
-const auth = require('../middleware/auth')
+const { authenticate } = require('../middleware/auth')
 
 function callOpenAI(messages, max_tokens = 1200) {
   return new Promise((resolve, reject) => {
@@ -46,7 +46,7 @@ function callOpenAI(messages, max_tokens = 1200) {
   })
 }
 
-router.post('/chat', auth, async (req, res) => {
+router.post('/chat', authenticate, async (req, res) => {
   const { messages, max_tokens = 1200 } = req.body
   if (!Array.isArray(messages)) {
     return res.status(400).json({ error: 'messages required' })
