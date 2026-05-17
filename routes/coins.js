@@ -7,7 +7,7 @@ const { authenticate } = require('../middleware/auth')
 const router = express.Router()
 
 const PACKAGES = [
-  { id: 'pack_test', coins: 10,   price: 10,   label: '10 монет (тест)', bonus: '' },
+  { id: 'pack_test', coins: 50,   price: 50,   label: '50 монет (тест)', bonus: '' },
   { id: 'pack_100',  coins: 100,  price: 100,  label: '100 монет',  bonus: '' },
   { id: 'pack_300',  coins: 300,  price: 270,  label: '300 монет',  bonus: 'Скидка 10%' },
   { id: 'pack_600',  coins: 600,  price: 480,  label: '600 монет',  bonus: 'Скидка 20%' },
