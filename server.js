@@ -21,26 +21,7 @@ app.use(helmet({
 }))
 
 // ── CORS ──────────────────────────────────────────────────
-app.use(cors({
-  origin: (origin, cb) => {
-    const base = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '')
-    const withoutWww = base.replace('://www.', '://')
-    const withWww = withoutWww.replace('://', '://www.')
-    if (
-      !origin ||
-      origin === base ||
-      origin === withoutWww ||
-      origin === withWww ||
-      /^http:\/\/localhost:\d+$/.test(origin) ||
-      /^https:\/\/[\w-]+(\.vercel\.app)$/.test(origin)
-    ) {
-      cb(null, true)
-    } else {
-      cb(new Error('Not allowed by CORS'))
-    }
-  },
-  credentials: true,
-}))
+app.use(cors({ origin: true, credentials: true }))
 
 app.use(express.json({ limit: '10kb' }))
 
