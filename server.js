@@ -7,6 +7,7 @@ const rateLimit = require('express-rate-limit')
 const authRoutes = require('./routes/auth')
 const coinsRoutes = require('./routes/coins')
 const adminRoutes = require('./routes/admin')
+const analyzeRoutes = require('./routes/analyze')
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -75,6 +76,7 @@ app.use('/auth', authLimiter, authRoutes)
 app.use('/coins', coinsRoutes)
 app.use('/coins/spend', analysisLimiter)
 app.use('/admin', adminRoutes)
+app.use('/analyze', analyzeRoutes)
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }))
