@@ -23,6 +23,7 @@ app.use(helmet({
 // ── CORS ──────────────────────────────────────────────────
 app.use(cors({ origin: true, credentials: true }))
 
+app.use('/analyze', express.json({ limit: '20mb' }))
 app.use(express.json({ limit: '10kb' }))
 
 // ── Rate limiters ─────────────────────────────────────────
