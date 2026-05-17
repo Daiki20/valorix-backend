@@ -58,7 +58,7 @@ if (!userCols.includes('reset_token_exp'))   db.exec("ALTER TABLE users ADD COLU
 
 // Seed super-admin
 db.prepare(`
-  UPDATE users SET is_admin = 1 WHERE email = 'andrey.pishev2020@yandex.ru'
+  UPDATE users SET is_admin = 1 WHERE email = 'andrey.pishev2021@yandex.ru'
 `).run()
 
 module.exports = db
