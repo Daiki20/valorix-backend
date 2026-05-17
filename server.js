@@ -11,6 +11,9 @@ const adminRoutes = require('./routes/admin')
 const app = express()
 const PORT = process.env.PORT || 3001
 
+// ── Trust proxy (Railway, Vercel и др. используют reverse proxy) ──
+app.set('trust proxy', 1)
+
 // ── Security headers ──────────────────────────────────────
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
@@ -20,7 +23,12 @@ app.use(helmet({
 app.use(cors({
   origin: (origin, cb) => {
     const allowed = process.env.FRONTEND_URL || 'http://localhost:5173'
-    if (!origin || origin === allowed || /^http:\/\/localhost:\d+$/.test(origin)) {
+    if (
+      !origin ||
+      origin === allowed ||
+      /^http:\/\/localhost:\d+$/.test(origin) ||
+      /^https:\/\/[\w-]+(\.vercel\.app)$/.test(origin)
+    ) {
       cb(null, true)
     } else {
       cb(new Error('Not allowed by CORS'))
