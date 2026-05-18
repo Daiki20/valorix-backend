@@ -3,6 +3,21 @@ const router = express.Router()
 const https = require('https')
 const { authenticate } = require('../middleware/auth')
 
+const analysisCache = new Map()
+const CACHE_TTL = 30 * 60 * 1000 // 30 minutes
+
+function cacheGet(key) {
+  const e = analysisCache.get(key)
+  if (!e) return null
+  if (Date.now() - e.t > CACHE_TTL) { analysisCache.delete(key); return null }
+  return e.v
+}
+
+function cacheSet(key, val) {
+  if (analysisCache.size >= 500) analysisCache.delete(analysisCache.keys().next().value)
+  analysisCache.set(key, { v: val, t: Date.now() })
+}
+
 const RAPIDAPI_HOST = 'free-api-live-football-data.p.rapidapi.com'
 const ESPORTS_HOST = 'esports-data.p.rapidapi.com'
 
@@ -383,11 +398,18 @@ router.post('/esports-context', authenticate, async (req, res) => {
 })
 
 router.post('/chat', authenticate, async (req, res) => {
-  const { messages, max_tokens = 1200 } = req.body
+  const { messages, max_tokens = 1200, cacheKey } = req.body
   if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages required' })
   if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'OpenAI API key not configured' })
+
+  if (cacheKey) {
+    const cached = cacheGet(cacheKey)
+    if (cached) return res.json({ content: cached })
+  }
+
   try {
     const content = await callOpenAI(messages, max_tokens)
+    if (cacheKey) cacheSet(cacheKey, content)
     res.json({ content })
   } catch (err) {
     console.error('OpenAI error:', err.message)

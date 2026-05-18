@@ -1,6 +1,7 @@
 const express = require('express')
 const https = require('https')
 const crypto = require('crypto')
+const { randomUUID } = require('crypto')
 const db = require('../db')
 const { authenticate } = require('../middleware/auth')
 
@@ -146,11 +147,14 @@ router.post('/spend', authenticate, (req, res) => {
       .run(req.user.id, -amount, 'spend', `Анализ матча: ${matchHome} vs ${matchAway}`)
   }
 
-  db.prepare('INSERT INTO analyses (user_id, match_home, match_away, league, result, coins_spent) VALUES (?, ?, ?, ?, ?, ?)')
+  const insertResult = db.prepare('INSERT INTO analyses (user_id, match_home, match_away, league, result, coins_spent) VALUES (?, ?, ?, ?, ?, ?)')
     .run(req.user.id, matchHome || '', matchAway || '', league || '', JSON.stringify(result) || '', isAdmin ? 0 : amount)
 
+  const shareToken = randomUUID()
+  db.prepare('UPDATE analyses SET share_token = ? WHERE id = ?').run(shareToken, insertResult.lastInsertRowid)
+
   const updated = db.prepare('SELECT coins FROM users WHERE id = ?').get(req.user.id)
-  res.json({ success: true, coins: updated.coins })
+  res.json({ success: true, coins: updated.coins, shareToken })
 })
 
 // GET /coins/transactions
