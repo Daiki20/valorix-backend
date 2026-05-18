@@ -16,21 +16,25 @@ const PORT = process.env.PORT || 3001
 // ── Trust proxy (Railway, Vercel и др. используют reverse proxy) ──
 app.set('trust proxy', 1)
 
-// ── Security headers ──────────────────────────────────────
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: 'cross-origin' },
-}))
-
-// ── CORS ──────────────────────────────────────────────────
+// ── CORS — должен быть до helmet и rate limiters ─────────
 const ALLOWED_ORIGINS = [
   'https://valorix.ru',
   'https://www.valorix.ru',
   'http://localhost:5173',
   'http://localhost:3000',
 ]
-app.use(cors({
-  origin: (origin, cb) => cb(null, !origin || ALLOWED_ORIGINS.includes(origin)),
+const corsOptions = {
+  origin: (origin, cb) => cb(null, !origin || ALLOWED_ORIGINS.includes(origin) ? true : false),
   credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}
+app.options('*', cors(corsOptions))
+app.use(cors(corsOptions))
+
+// ── Security headers ──────────────────────────────────────
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
 }))
 
 app.use('/analyze', express.json({ limit: '20mb' }))
