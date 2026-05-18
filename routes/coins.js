@@ -68,7 +68,7 @@ router.post('/create-payment', authenticate, async (req, res) => {
   const pkg = PACKAGES.find(p => p.id === packageId)
   if (!pkg) return res.status(400).json({ error: 'Неверный пакет' })
 
-  const allowedMethods = ['bank_card', 'sbp', 'sberbank']
+  const allowedMethods = ['bank_card', 'sbp', 'sberbank', 'tinkoff_bank']
   const method = allowedMethods.includes(paymentMethod) ? paymentMethod : null
 
   try {
