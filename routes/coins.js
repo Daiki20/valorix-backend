@@ -64,13 +64,16 @@ router.get('/balance', authenticate, (req, res) => {
 
 // POST /coins/create-payment — создать платёж в ЮКассе
 router.post('/create-payment', authenticate, async (req, res) => {
-  const { packageId } = req.body
+  const { packageId, paymentMethod } = req.body
   const pkg = PACKAGES.find(p => p.id === packageId)
   if (!pkg) return res.status(400).json({ error: 'Неверный пакет' })
 
+  const allowedMethods = ['bank_card', 'sbp', 'sberbank']
+  const method = allowedMethods.includes(paymentMethod) ? paymentMethod : null
+
   try {
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
-    const payment = await yukassaRequest('POST', '/payments', {
+    const paymentBody = {
       amount: { value: pkg.price.toFixed(2), currency: 'RUB' },
       confirmation: {
         type: 'redirect',
@@ -79,7 +82,9 @@ router.post('/create-payment', authenticate, async (req, res) => {
       capture: true,
       description: `Valorix AI — ${pkg.label}`,
       metadata: { userId: String(req.user.id), coins: String(pkg.coins), packageId: pkg.id },
-    })
+    }
+    if (method) paymentBody.payment_method_data = { type: method }
+    const payment = await yukassaRequest('POST', '/payments', paymentBody)
 
     db.prepare('INSERT OR IGNORE INTO pending_payments (id, user_id, coins, package_id) VALUES (?, ?, ?, ?)')
       .run(payment.id, req.user.id, pkg.coins, pkg.id)
