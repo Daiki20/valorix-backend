@@ -12,7 +12,7 @@ db.exec(`
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     username TEXT,
-    coins INTEGER NOT NULL DEFAULT 10,
+    coins INTEGER NOT NULL DEFAULT 50,
     is_admin INTEGER NOT NULL DEFAULT 0,
     is_blocked INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
