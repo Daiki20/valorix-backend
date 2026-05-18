@@ -57,7 +57,10 @@ if (!userCols.includes('reset_token'))       db.exec("ALTER TABLE users ADD COLU
 if (!userCols.includes('reset_token_exp'))   db.exec("ALTER TABLE users ADD COLUMN reset_token_exp INTEGER")
 
 const analysisCols2 = db.prepare("PRAGMA table_info(analyses)").all().map(c => c.name)
-if (!analysisCols2.includes('share_token')) db.exec("ALTER TABLE analyses ADD COLUMN share_token TEXT UNIQUE")
+if (!analysisCols2.includes('share_token')) {
+  db.exec("ALTER TABLE analyses ADD COLUMN share_token TEXT")
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_analyses_share_token ON analyses(share_token)")
+}
 
 // Seed super-admin
 db.prepare(`
