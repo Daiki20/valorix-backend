@@ -125,10 +125,18 @@ async function generateExpress(targetDate) {
       realMatches.map(m => fetchOddsText(m.id))
     )
 
-    const matchBlocks = realMatches.map((m, i) => {
-      const oddsBlock = oddsTexts[i]
-        ? `\n${oddsTexts[i]}`
-        : '\n  (коэффициенты недоступны)'
+    // Only keep matches that have real odds data
+    const matchesWithOdds = realMatches.filter((m, i) => oddsTexts[i] !== null)
+    const filteredOdds = oddsTexts.filter(o => o !== null)
+
+    // Need at least 2 matches with real odds to build a proper express
+    const useMatches = matchesWithOdds.length >= 2 ? matchesWithOdds : realMatches
+    const useOdds = matchesWithOdds.length >= 2 ? filteredOdds : oddsTexts
+
+    const matchBlocks = useMatches.map((m, i) => {
+      const oddsBlock = useOdds[i]
+        ? `\n${useOdds[i]}`
+        : '\n  (коэффициенты недоступны — пропусти этот матч)'
       return `${i + 1}. ${m.home} — ${m.away} (${m.league})${oddsBlock}`
     }).join('\n\n')
 
