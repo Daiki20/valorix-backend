@@ -62,6 +62,23 @@ if (!analysisCols2.includes('share_token')) {
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_analyses_share_token ON analyses(share_token)")
 }
 
+// Express tables
+db.exec(`
+  CREATE TABLE IF NOT EXISTS daily_express (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL UNIQUE,
+    data TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS express_purchases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    express_date TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, express_date)
+  );
+`)
+
 // Seed super-admin
 db.prepare(`
   UPDATE users SET is_admin = 1 WHERE email = 'andrey.pishev2021@yandex.ru'

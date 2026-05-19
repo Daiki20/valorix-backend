@@ -9,6 +9,7 @@ const coinsRoutes = require('./routes/coins')
 const adminRoutes = require('./routes/admin')
 const analyzeRoutes = require('./routes/analyze')
 const shareRoutes = require('./routes/share')
+const expressRoutes = require('./routes/express')
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -77,6 +78,7 @@ app.use('/coins/spend', analysisLimiter)
 app.use('/admin', adminRoutes)
 app.use('/analyze', analyzeRoutes)
 app.use('/share', shareRoutes)
+app.use('/express', expressRoutes)
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }))
