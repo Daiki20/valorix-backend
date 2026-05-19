@@ -11,6 +11,7 @@ const adminRoutes = require('./routes/admin')
 const analyzeRoutes = require('./routes/analyze')
 const shareRoutes = require('./routes/share')
 const expressRoutes = require('./routes/express')
+const matchesRoutes = require('./routes/matches')
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -80,6 +81,7 @@ app.use('/admin', adminRoutes)
 app.use('/analyze', analyzeRoutes)
 app.use('/share', shareRoutes)
 app.use('/express', expressRoutes)
+app.use('/matches', matchesRoutes)
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }))
