@@ -44,8 +44,12 @@ function callOpenAI(messages, max_tokens = 1200) {
       res.on('data', chunk => { data += chunk })
       res.on('end', () => {
         if (res.statusCode !== 200) { reject(new Error(`OpenAI ${res.statusCode}: ${data}`)); return }
-        try { resolve(JSON.parse(data).choices[0].message.content) }
-        catch { reject(new Error('OpenAI parse error')) }
+        try {
+          const parsed = JSON.parse(data)
+          const content = parsed?.choices?.[0]?.message?.content
+          if (!content) throw new Error('Empty response')
+          resolve(content)
+        } catch { reject(new Error('OpenAI parse error')) }
       })
     })
     req.on('error', reject)

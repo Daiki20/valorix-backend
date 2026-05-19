@@ -33,7 +33,8 @@ router.get('/stats', (req, res) => {
 
 // GET /admin/users — все пользователи
 router.get('/users', (req, res) => {
-  const { search = '', page = 1 } = req.query
+  const { search = '' } = req.query
+  const page = Math.max(1, parseInt(req.query.page || '1', 10) || 1)
   const limit = 20
   const offset = (page - 1) * limit
   const pattern = `%${search}%`

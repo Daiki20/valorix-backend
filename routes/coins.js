@@ -59,7 +59,7 @@ router.get('/packages', (req, res) => {
 // GET /coins/balance
 router.get('/balance', authenticate, (req, res) => {
   const user = db.prepare('SELECT coins FROM users WHERE id = ?').get(req.user.id)
-  res.json({ coins: user.coins })
+  res.json({ coins: user?.coins ?? 0 })
 })
 
 // POST /coins/create-payment — создать платёж в ЮКассе
@@ -116,10 +116,10 @@ router.get('/verify-payment/:paymentId', authenticate, async (req, res) => {
 
     // Берём кол-во монет из нашей БД или из metadata платежа
     const pending = db.prepare('SELECT * FROM pending_payments WHERE id = ?').get(paymentId)
-    const coins = pending ? pending.coins : parseInt(payment.metadata?.coins || '0')
-    const userId = pending ? pending.user_id : parseInt(payment.metadata?.userId || '0')
+    const coins = pending ? pending.coins : parseInt(payment.metadata?.coins || '0', 10)
+    const userId = pending ? pending.user_id : parseInt(payment.metadata?.userId || '0', 10)
 
-    if (!coins || userId !== req.user.id) {
+    if (!coins || isNaN(coins) || coins <= 0 || isNaN(userId) || userId !== req.user.id) {
       return res.status(400).json({ error: 'Ошибка верификации платежа' })
     }
 
@@ -131,7 +131,7 @@ router.get('/verify-payment/:paymentId', authenticate, async (req, res) => {
       .run(req.user.id, coins, 'purchase', `Пополнение ${coins} монет`, paymentId)
 
     const user = db.prepare('SELECT coins FROM users WHERE id = ?').get(req.user.id)
-    res.json({ status: 'credited', coins: user.coins })
+    res.json({ status: 'credited', coins: user?.coins ?? 0 })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -144,7 +144,7 @@ router.post('/spend', authenticate, (req, res) => {
 
   if (!isAdmin) {
     const user = db.prepare('SELECT coins FROM users WHERE id = ?').get(req.user.id)
-    if (user.coins < amount) {
+    if (!user || user.coins < amount) {
       return res.status(402).json({ error: 'Недостаточно монет', coins: user.coins })
     }
     db.prepare('UPDATE users SET coins = coins - ? WHERE id = ?').run(amount, req.user.id)
@@ -159,7 +159,7 @@ router.post('/spend', authenticate, (req, res) => {
   db.prepare('UPDATE analyses SET share_token = ? WHERE id = ?').run(shareToken, insertResult.lastInsertRowid)
 
   const updated = db.prepare('SELECT coins FROM users WHERE id = ?').get(req.user.id)
-  res.json({ success: true, coins: updated.coins, shareToken })
+  res.json({ success: true, coins: updated?.coins ?? 0, shareToken })
 })
 
 // GET /coins/transactions
@@ -176,8 +176,13 @@ router.post('/yukassa-webhook', (req, res) => {
   const { metadata } = event.object
   if (!metadata?.userId || !metadata?.coins) return res.sendStatus(200)
 
-  const userId = parseInt(metadata.userId)
-  const coins = parseInt(metadata.coins)
+  const userId = parseInt(metadata.userId, 10)
+  const coins = parseInt(metadata.coins, 10)
+
+  if (isNaN(userId) || userId <= 0 || isNaN(coins) || coins <= 0) {
+    console.error('[webhook] Invalid metadata:', metadata)
+    return res.sendStatus(400)
+  }
 
   db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(coins, userId)
   db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description, payment_id) VALUES (?, ?, ?, ?, ?)')

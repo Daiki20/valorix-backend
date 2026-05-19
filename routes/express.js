@@ -22,14 +22,16 @@ function getTodayDate() {
 
 function httpsGet(url) {
   return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
+    const req = https.get(url, (res) => {
       let data = ''
       res.on('data', chunk => data += chunk)
       res.on('end', () => {
         try { resolve(JSON.parse(data)) }
         catch { reject(new Error('JSON parse error')) }
       })
-    }).on('error', reject)
+    })
+    req.on('error', reject)
+    req.setTimeout(8000, () => { req.destroy(); reject(new Error('sstats timeout')) })
   })
 }
 
@@ -185,7 +187,8 @@ ${ODDS_TRANSLATION}
 
     const jsonMatch = content.match(/\{[\s\S]*\}/)
     if (!jsonMatch) throw new Error('Invalid JSON from OpenAI')
-    const data = JSON.parse(jsonMatch[0])
+    let data
+    try { data = JSON.parse(jsonMatch[0]) } catch { throw new Error('JSON parse failed') }
     if (!data.picks || data.picks.length < 2) throw new Error('Not enough picks')
 
     const total = data.picks.reduce((acc, p) => acc * (parseFloat(p.odds) || 1), 1)
@@ -216,7 +219,8 @@ ${isHigh
   ])
   const jsonMatch = content.match(/\{[\s\S]*\}/)
   if (!jsonMatch) throw new Error('Invalid JSON from OpenAI')
-  const data = JSON.parse(jsonMatch[0])
+  let data
+  try { data = JSON.parse(jsonMatch[0]) } catch { throw new Error('JSON parse failed') }
   if (!data.picks || data.picks.length < 2) throw new Error('Not enough picks')
   return data
 }
@@ -246,7 +250,8 @@ router.get('/today', async (req, res) => {
           row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
         } catch { return null }
       }
-      const expressData = JSON.parse(row.data)
+      let expressData
+      try { expressData = JSON.parse(row.data) } catch { return null }
       const purchased = userId
         ? !!db.prepare(`SELECT 1 FROM ${purchaseTable} WHERE user_id = ? AND express_date = ?`).get(userId, expressDate)
         : false
