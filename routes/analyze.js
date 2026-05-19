@@ -21,13 +21,12 @@ function cacheSet(key, val) {
 const RAPIDAPI_HOST = 'free-api-live-football-data.p.rapidapi.com'
 const ESPORTS_HOST = 'esports-data.p.rapidapi.com'
 
-function callOpenAI(messages, max_tokens = 1200) {
+function callOpenAI(messages) {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
-      model: 'gpt-4o',
+      model: 'o4-mini',
       messages,
-      max_tokens,
-      response_format: { type: 'json_object' },
+      max_completion_tokens: 2000,
     })
     const options = {
       hostname: 'api.openai.com',
