@@ -173,7 +173,34 @@ ${matchList}
   if (!jsonMatch) throw new Error('Invalid JSON from OpenAI')
   const data = JSON.parse(jsonMatch[0])
   if (!data.picks || data.picks.length < 2) throw new Error('Not enough picks')
+
+  // Replace odds with real values from sstats where possible
+  if (realMatches.length > 0) {
+    data.picks = data.picks.map(pick => {
+      const match = realMatches.find(m =>
+        normalize(m.home) === normalize(pick.home) ||
+        normalize(m.away) === normalize(pick.away)
+      )
+      if (!match) return pick
+      const pred = (pick.prediction || '').toLowerCase()
+      let realOdds = null
+      if (pred.startsWith('п1') || pred.startsWith('p1') || pred.includes('победа хозяев')) realOdds = match.odds1
+      else if (pred.startsWith('п2') || pred.startsWith('p2') || pred.includes('победа гостей')) realOdds = match.odds2
+      else if (pred === 'x' || pred === 'ничья') realOdds = match.oddsX
+      if (realOdds) return { ...pick, odds: realOdds }
+      return pick
+    })
+  }
+
+  // Recalculate total_odds from actual pick odds
+  const total = data.picks.reduce((acc, p) => acc * (parseFloat(p.odds) || 1), 1)
+  data.total_odds = Math.round(total * 100) / 100
+
   return data
+}
+
+function normalize(s) {
+  return (s || '').toLowerCase().replace(/[^a-zа-яё0-9]/gi, '')
 }
 
 router.get('/today', async (req, res) => {
