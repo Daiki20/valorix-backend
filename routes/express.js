@@ -6,6 +6,9 @@ const { authenticate } = require('../middleware/auth')
 const router = express.Router()
 const EXPRESS_COST = 28
 
+// Top league IDs (sstats)
+const TOP_LEAGUE_IDS = [2, 3, 848, 39, 140, 135, 78, 61, 235]
+
 function getTomorrowDate() {
   const d = new Date()
   d.setDate(d.getDate() + 1)
@@ -16,9 +19,22 @@ function getTodayDate() {
   return new Date().toISOString().slice(0, 10)
 }
 
+function httpsGet(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      let data = ''
+      res.on('data', chunk => data += chunk)
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)) }
+        catch { reject(new Error('JSON parse error')) }
+      })
+    }).on('error', reject)
+  })
+}
+
 function openAIRequest(messages) {
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ model: 'gpt-4o', messages, temperature: 0.7, max_tokens: 1000 })
+    const body = JSON.stringify({ model: 'gpt-4o', messages, temperature: 0.7, max_tokens: 1200 })
     const options = {
       hostname: 'api.openai.com',
       path: '/v1/chat/completions',
@@ -46,14 +62,89 @@ function openAIRequest(messages) {
   })
 }
 
+async function fetchRealMatches(targetDate) {
+  const key = process.env.SSTATS_API_KEY
+  if (!key) return []
+
+  const results = await Promise.all(
+    TOP_LEAGUE_IDS.map(id =>
+      httpsGet(`https://api.sstats.net/Games/list?upcoming=true&leagueid=${id}&limit=10&apikey=${key}`)
+        .catch(() => ({ data: [] }))
+    )
+  )
+
+  const allGames = results.flatMap(r => Array.isArray(r.data) ? r.data : [])
+
+  return allGames
+    .filter(g => {
+      if (!g.date || !g.homeTeam?.name || !g.awayTeam?.name) return false
+      return g.date.slice(0, 10) === targetDate
+    })
+    .map(g => {
+      const market = g.odds?.find(o => o.marketId === 1)
+      const odds1 = market?.odds?.find(o => o.name === 'Home')?.value
+      const oddsX = market?.odds?.find(o => o.name === 'Draw')?.value
+      const odds2 = market?.odds?.find(o => o.name === 'Away')?.value
+      return {
+        home: g.homeTeam.name,
+        away: g.awayTeam.name,
+        league: g.season?.league?.name || 'Unknown',
+        odds1: odds1 || null,
+        oddsX: oddsX || null,
+        odds2: odds2 || null,
+      }
+    })
+}
+
 async function generateExpress(targetDate) {
-  const prompt = `Ты — эксперт по ставкам на спорт. Сегодня ${getTodayDate()}, составь экспресс из матчей на ${targetDate}.
+  const realMatches = await fetchRealMatches(targetDate)
+
+  let prompt
+  if (realMatches.length >= 2) {
+    const matchList = realMatches.map((m, i) => {
+      const oddsStr = m.odds1
+        ? ` | коэфы: П1=${m.odds1}, X=${m.oddsX ?? '—'}, П2=${m.odds2}`
+        : ''
+      return `${i + 1}. ${m.home} — ${m.away} (${m.league})${oddsStr}`
+    }).join('\n')
+
+    prompt = `Ты — эксперт по ставкам на спорт. Выбери 2-3 матча для экспресса из РЕАЛЬНОГО расписания на ${targetDate}.
+
+РЕАЛЬНЫЕ МАТЧИ НА ${targetDate}:
+${matchList}
 
 Требования:
-- 2-3 матча ТОЛЬКО из топовых лиг: Примера, АПЛ, Серия А, Бундеслига, Лига 1, Лига чемпионов, Лига Европы, РПЛ
+- Выбирай ТОЛЬКО из матчей выше — не придумывай других матчей
 - Минимальный коэффициент на каждую ставку: 1.33
 - Только ставки с вероятностью прохода >65%
-- Типы ставок: победа (1/2), обе забьют, тотал, фора
+- Типы ставок: победа (П1/П2), обе забьют, тотал, фора
+- Поля home/away/league должны быть ТОЧНО как в списке выше
+
+Ответь ТОЛЬКО валидным JSON:
+{
+  "date": "${targetDate}",
+  "picks": [
+    {
+      "home": "название из списка",
+      "away": "название из списка",
+      "league": "лига из списка",
+      "prediction": "Ставка (П1 / П2 / Обе забьют - Да / ТБ 2.5 / Фора)",
+      "odds": 1.55,
+      "reasoning": "Обоснование 1-2 предложения"
+    }
+  ],
+  "total_odds": 3.47,
+  "summary": "Краткое описание экспресса"
+}`
+  } else {
+    // Fallback: no real data — let GPT pick from known top leagues
+    prompt = `Ты — эксперт по ставкам на спорт. Сегодня ${getTodayDate()}, составь экспресс из матчей топовых лиг на ${targetDate}.
+
+Требования:
+- 2-3 матча ТОЛЬКО из: Примера, АПЛ, Серия А, Бундеслига, Лига 1, Лига чемпионов, Лига Европы, РПЛ
+- Минимальный коэффициент на каждую ставку: 1.33
+- Только ставки с вероятностью прохода >65%
+- Типы ставок: победа (П1/П2), обе забьют, тотал, фора
 
 Ответь ТОЛЬКО валидным JSON:
 {
@@ -63,14 +154,15 @@ async function generateExpress(targetDate) {
       "home": "Домашняя команда",
       "away": "Гостевая команда",
       "league": "Лига",
-      "prediction": "Ставка (П1 / Обе забьют - Да / ТБ 2.5)",
+      "prediction": "Ставка",
       "odds": 1.55,
-      "reasoning": "Обоснование 1-2 предложения"
+      "reasoning": "Обоснование"
     }
   ],
   "total_odds": 3.47,
   "summary": "Краткое описание экспресса"
 }`
+  }
 
   const content = await openAIRequest([
     { role: 'system', content: 'Ты эксперт по ставкам. Отвечай только валидным JSON.' },
