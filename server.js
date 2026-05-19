@@ -3,6 +3,7 @@ const express = require('express')
 const cors = require('cors')
 const helmet = require('helmet')
 const rateLimit = require('express-rate-limit')
+const cron = require('node-cron')
 
 const authRoutes = require('./routes/auth')
 const coinsRoutes = require('./routes/coins')
@@ -82,6 +83,21 @@ app.use('/express', expressRoutes)
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }))
+
+// ── Cron: auto-generate express at 00:00 MSK (21:00 UTC) ─────────────────
+cron.schedule('0 21 * * *', async () => {
+  console.log('[cron] Generating daily express...')
+  try {
+    const { generateExpressForDate, getTomorrowDate } = require('./routes/express')
+    const db = require('./db')
+    const targetDate = getTomorrowDate()
+    const data = await generateExpressForDate(targetDate)
+    db.prepare('INSERT OR REPLACE INTO daily_express (date, data) VALUES (?, ?)').run(targetDate, JSON.stringify(data))
+    console.log(`[cron] Express generated for ${targetDate}`)
+  } catch (err) {
+    console.error('[cron] Express generation failed:', err.message)
+  }
+}, { timezone: 'UTC' })
 
 // ── 404 ───────────────────────────────────────────────────
 app.use((req, res) => {

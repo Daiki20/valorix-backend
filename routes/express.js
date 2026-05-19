@@ -168,3 +168,5 @@ router.post('/generate', authenticate, async (req, res) => {
 })
 
 module.exports = router
+module.exports.generateExpressForDate = generateExpress
+module.exports.getTomorrowDate = getTomorrowDate
