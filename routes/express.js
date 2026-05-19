@@ -307,7 +307,19 @@ router.post('/purchase', authenticate, (req, res) => {
 router.post('/generate', authenticate, async (req, res) => {
   if (!req.user.is_admin) return res.status(403).json({ error: 'Только для администраторов' })
   const expressDate = getTomorrowDate()
+  const type = req.body?.type // 'standard' | 'high' | undefined (both)
   try {
+    if (type === 'standard') {
+      const data = await generateExpress(expressDate, 'standard')
+      db.prepare('INSERT OR REPLACE INTO daily_express (date, data) VALUES (?, ?)').run(expressDate, JSON.stringify(data))
+      return res.json({ success: true, date: expressDate, ...data })
+    }
+    if (type === 'high') {
+      const data = await generateExpress(expressDate, 'high')
+      db.prepare('INSERT OR REPLACE INTO daily_express_high (date, data) VALUES (?, ?)').run(expressDate, JSON.stringify(data))
+      return res.json({ success: true, date: expressDate, ...data })
+    }
+    // Generate both
     const [standard, high] = await Promise.all([
       generateExpress(expressDate, 'standard'),
       generateExpress(expressDate, 'high'),
