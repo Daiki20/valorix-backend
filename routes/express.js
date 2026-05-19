@@ -6,7 +6,6 @@ const { authenticate } = require('../middleware/auth')
 const router = express.Router()
 const EXPRESS_COST = 28
 
-// Top league IDs (sstats)
 const TOP_LEAGUE_IDS = [2, 3, 848, 39, 140, 135, 78, 61, 235]
 
 function getTomorrowDate() {
@@ -17,6 +16,10 @@ function getTomorrowDate() {
 
 function getTodayDate() {
   return new Date().toISOString().slice(0, 10)
+}
+
+function normalize(s) {
+  return (s || '').toLowerCase().replace(/[^a-zа-яё0-9]/gi, '')
 }
 
 function httpsGet(url) {
@@ -34,7 +37,7 @@ function httpsGet(url) {
 
 function openAIRequest(messages) {
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ model: 'gpt-4o', messages, temperature: 0.7, max_tokens: 1200 })
+    const body = JSON.stringify({ model: 'gpt-4o', messages, temperature: 0.7, max_tokens: 1500 })
     const options = {
       hostname: 'api.openai.com',
       path: '/v1/chat/completions',
@@ -76,48 +79,71 @@ async function fetchRealMatches(targetDate) {
   const allGames = results.flatMap(r => Array.isArray(r.data) ? r.data : [])
 
   return allGames
-    .filter(g => {
-      if (!g.date || !g.homeTeam?.name || !g.awayTeam?.name) return false
-      return g.date.slice(0, 10) === targetDate
-    })
-    .map(g => {
-      const market = g.odds?.find(o => o.marketId === 1)
-      const odds1 = market?.odds?.find(o => o.name === 'Home')?.value
-      const oddsX = market?.odds?.find(o => o.name === 'Draw')?.value
-      const odds2 = market?.odds?.find(o => o.name === 'Away')?.value
-      return {
-        home: g.homeTeam.name,
-        away: g.awayTeam.name,
-        league: g.season?.league?.name || 'Unknown',
-        odds1: odds1 || null,
-        oddsX: oddsX || null,
-        odds2: odds2 || null,
-      }
-    })
+    .filter(g => g.date && g.homeTeam?.name && g.awayTeam?.name && g.date.slice(0, 10) === targetDate)
+    .map(g => ({
+      id: g.id,
+      home: g.homeTeam.name,
+      away: g.awayTeam.name,
+      league: g.season?.league?.name || 'Unknown',
+    }))
+}
+
+// Fetch all available odds markets for a game and format them as text for GPT
+async function fetchOddsText(gameId) {
+  const key = process.env.SSTATS_API_KEY
+  if (!key || !gameId) return null
+
+  try {
+    const res = await httpsGet(`https://api.sstats.net/Odds/${gameId}?apikey=${key}`)
+    const bookmakers = Array.isArray(res.data) ? res.data : []
+    if (!bookmakers.length) return null
+
+    // Use the bookmaker with the most markets
+    const bk = bookmakers.reduce((best, cur) =>
+      (cur.odds?.length || 0) > (best.odds?.length || 0) ? cur : best
+    , bookmakers[0])
+
+    const lines = []
+    for (const market of (bk.odds || [])) {
+      if (!market.odds?.length) continue
+      const outcomeParts = market.odds.map(o => `${o.name} = ${o.value}`).join(', ')
+      lines.push(`  [${market.marketName || market.marketId}]: ${outcomeParts}`)
+    }
+
+    return lines.length ? `${bk.bookmakerName}:\n${lines.join('\n')}` : null
+  } catch {
+    return null
+  }
 }
 
 async function generateExpress(targetDate) {
   const realMatches = await fetchRealMatches(targetDate)
 
-  let prompt
   if (realMatches.length >= 2) {
-    const matchList = realMatches.map((m, i) => {
-      const oddsStr = m.odds1
-        ? ` | коэфы: П1=${m.odds1}, X=${m.oddsX ?? '—'}, П2=${m.odds2}`
-        : ''
-      return `${i + 1}. ${m.home} — ${m.away} (${m.league})${oddsStr}`
-    }).join('\n')
+    // Fetch odds for all matches in parallel
+    const oddsTexts = await Promise.all(
+      realMatches.map(m => fetchOddsText(m.id))
+    )
 
-    prompt = `Ты — эксперт по ставкам на спорт. Выбери 2-3 матча для экспресса из РЕАЛЬНОГО расписания на ${targetDate}.
+    const matchBlocks = realMatches.map((m, i) => {
+      const oddsBlock = oddsTexts[i]
+        ? `\n${oddsTexts[i]}`
+        : '\n  (коэффициенты недоступны)'
+      return `${i + 1}. ${m.home} — ${m.away} (${m.league})${oddsBlock}`
+    }).join('\n\n')
 
-РЕАЛЬНЫЕ МАТЧИ НА ${targetDate}:
-${matchList}
+    const prompt = `Ты — эксперт по ставкам на спорт. Выбери 2-3 матча для экспресса из РЕАЛЬНОГО расписания на ${targetDate}.
+
+РЕАЛЬНЫЕ МАТЧИ С КОЭФФИЦИЕНТАМИ НА ${targetDate}:
+${matchBlocks}
 
 Требования:
-- Выбирай ТОЛЬКО из матчей выше — не придумывай других матчей
-- Минимальный коэффициент на каждую ставку: 1.33
+- Выбирай ТОЛЬКО из матчей выше
+- Для каждого пика ОБЯЗАТЕЛЬНО используй РЕАЛЬНЫЙ коэффициент из списка выше — не придумывай
+- В поле "odds" ставь ТОЧНОЕ число из списка коэффициентов выше
+- Минимальный коэффициент: 1.33
 - Только ставки с вероятностью прохода >65%
-- Типы ставок: победа (П1/П2), обе забьют, тотал, фора
+- В поле "prediction" пиши название ставки точно как в списке (например "Over 2.5", "Home", "Both Teams Score - Yes")
 - Поля home/away/league должны быть ТОЧНО как в списке выше
 
 Ответь ТОЛЬКО валидным JSON:
@@ -128,7 +154,7 @@ ${matchList}
       "home": "название из списка",
       "away": "название из списка",
       "league": "лига из списка",
-      "prediction": "Ставка (П1 / П2 / Обе забьют - Да / ТБ 2.5 / Фора)",
+      "prediction": "название ставки из списка коэффициентов",
       "odds": 1.55,
       "reasoning": "Обоснование 1-2 предложения"
     }
@@ -136,15 +162,31 @@ ${matchList}
   "total_odds": 3.47,
   "summary": "Краткое описание экспресса"
 }`
-  } else {
-    // Fallback: no real data — let GPT pick from known top leagues
-    prompt = `Ты — эксперт по ставкам на спорт. Сегодня ${getTodayDate()}, составь экспресс из матчей топовых лиг на ${targetDate}.
+
+    const content = await openAIRequest([
+      { role: 'system', content: 'Ты эксперт по ставкам. Отвечай только валидным JSON. Используй только реальные коэффициенты из предоставленного списка.' },
+      { role: 'user', content: prompt },
+    ])
+
+    const jsonMatch = content.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) throw new Error('Invalid JSON from OpenAI')
+    const data = JSON.parse(jsonMatch[0])
+    if (!data.picks || data.picks.length < 2) throw new Error('Not enough picks')
+
+    // Recalculate total_odds from actual pick odds
+    const total = data.picks.reduce((acc, p) => acc * (parseFloat(p.odds) || 1), 1)
+    data.total_odds = Math.round(total * 100) / 100
+
+    return data
+  }
+
+  // Fallback: no real data
+  const prompt = `Ты — эксперт по ставкам на спорт. Сегодня ${getTodayDate()}, составь экспресс из матчей топовых лиг на ${targetDate}.
 
 Требования:
 - 2-3 матча ТОЛЬКО из: Примера, АПЛ, Серия А, Бундеслига, Лига 1, Лига чемпионов, Лига Европы, РПЛ
-- Минимальный коэффициент на каждую ставку: 1.33
+- Минимальный коэффициент: 1.33
 - Только ставки с вероятностью прохода >65%
-- Типы ставок: победа (П1/П2), обе забьют, тотал, фора
 
 Ответь ТОЛЬКО валидным JSON:
 {
@@ -162,7 +204,6 @@ ${matchList}
   "total_odds": 3.47,
   "summary": "Краткое описание экспресса"
 }`
-  }
 
   const content = await openAIRequest([
     { role: 'system', content: 'Ты эксперт по ставкам. Отвечай только валидным JSON.' },
@@ -173,34 +214,7 @@ ${matchList}
   if (!jsonMatch) throw new Error('Invalid JSON from OpenAI')
   const data = JSON.parse(jsonMatch[0])
   if (!data.picks || data.picks.length < 2) throw new Error('Not enough picks')
-
-  // Replace odds with real values from sstats where possible
-  if (realMatches.length > 0) {
-    data.picks = data.picks.map(pick => {
-      const match = realMatches.find(m =>
-        normalize(m.home) === normalize(pick.home) ||
-        normalize(m.away) === normalize(pick.away)
-      )
-      if (!match) return pick
-      const pred = (pick.prediction || '').toLowerCase()
-      let realOdds = null
-      if (pred.startsWith('п1') || pred.startsWith('p1') || pred.includes('победа хозяев')) realOdds = match.odds1
-      else if (pred.startsWith('п2') || pred.startsWith('p2') || pred.includes('победа гостей')) realOdds = match.odds2
-      else if (pred === 'x' || pred === 'ничья') realOdds = match.oddsX
-      if (realOdds) return { ...pick, odds: realOdds }
-      return pick
-    })
-  }
-
-  // Recalculate total_odds from actual pick odds
-  const total = data.picks.reduce((acc, p) => acc * (parseFloat(p.odds) || 1), 1)
-  data.total_odds = Math.round(total * 100) / 100
-
   return data
-}
-
-function normalize(s) {
-  return (s || '').toLowerCase().replace(/[^a-zа-яё0-9]/gi, '')
 }
 
 router.get('/today', async (req, res) => {
