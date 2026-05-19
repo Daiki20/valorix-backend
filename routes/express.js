@@ -154,11 +154,18 @@ ${matchBlocks}
 - Поля home/away/league — ТОЧНО как в списке выше
 - ВСЕ текстовые поля (prediction, reasoning, summary) — СТРОГО на русском языке
 
-Перевод названий ставок на русский:
-- Home → П1, Away → П2, Draw → X, Home/Draw → 1X, Away/Draw → X2
-- Over N → ТБ N, Under N → ТМ N
-- Both Teams Score - Yes → Обе забьют, Both Teams Score - No → Обе не забьют
-- Asian Handicap Home → Фора хозяев, Asian Handicap Away → Фора гостей
+Перевод названий ставок на русский (пиши полное понятное название):
+- Home → Победа хозяев (П1)
+- Away → Победа гостей (П2)
+- Draw → Ничья (X)
+- Home/Draw → Двойной шанс (1X)
+- Away/Draw → Двойной шанс (X2)
+- Over N → Тотал больше N (ТБ N)
+- Under N → Тотал меньше N (ТМ N)
+- Both Teams Score - Yes → Обе команды забьют
+- Both Teams Score - No → Обе команды не забьют
+- Asian Handicap Home N → Фора хозяев (N)
+- Asian Handicap Away N → Фора гостей (N)
 
 Ответь ТОЛЬКО валидным JSON:
 {
