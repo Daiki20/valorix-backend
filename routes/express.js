@@ -2,6 +2,7 @@ const express = require('express')
 const https = require('https')
 const db = require('../db')
 const { authenticate } = require('../middleware/auth')
+const { translateTeam } = require('../teamNames')
 
 const router = express.Router()
 const EXPRESS_COST_STANDARD = 39
@@ -77,7 +78,7 @@ async function fetchRealMatches(targetDate) {
 
   return allGames
     .filter(g => g.date && g.homeTeam?.name && g.awayTeam?.name && g.date.slice(0, 10) === targetDate)
-    .map(g => ({ id: g.id, home: g.homeTeam.name, away: g.awayTeam.name, league: g.season?.league?.name || 'Unknown' }))
+    .map(g => ({ id: g.id, home: translateTeam(g.homeTeam.name), away: translateTeam(g.awayTeam.name), league: g.season?.league?.name || 'Unknown' }))
 }
 
 async function fetchOddsText(gameId) {
