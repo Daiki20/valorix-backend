@@ -57,11 +57,11 @@ router.post('/register', async (req, res) => {
 
   const password_hash = await bcrypt.hash(password, 12)
   const result = db.prepare(
-    'INSERT INTO users (email, password_hash, username, coins) VALUES (?, ?, ?, 34)'
+    'INSERT INTO users (email, password_hash, username, coins) VALUES (?, ?, ?, 38)'
   ).run(email, password_hash, username || email.split('@')[0])
 
   db.prepare(
-    'INSERT INTO coin_transactions (user_id, amount, type, description) VALUES (?, 34, ?, ?)'
+    'INSERT INTO coin_transactions (user_id, amount, type, description) VALUES (?, 38, ?, ?)'
   ).run(result.lastInsertRowid, 'bonus', 'Приветственный бонус')
 
   const user = db.prepare('SELECT id, email, username, coins, is_admin, is_blocked FROM users WHERE id = ?').get(result.lastInsertRowid)

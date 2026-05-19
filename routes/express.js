@@ -4,8 +4,8 @@ const db = require('../db')
 const { authenticate } = require('../middleware/auth')
 
 const router = express.Router()
-const EXPRESS_COST_STANDARD = 36
-const EXPRESS_COST_HIGH = 46
+const EXPRESS_COST_STANDARD = 39
+const EXPRESS_COST_HIGH = 49
 
 const TOP_LEAGUE_IDS = [2, 3, 848, 39, 140, 135, 78, 61, 235]
 
