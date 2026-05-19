@@ -38,27 +38,32 @@ function generateCode() {
   return String(Math.floor(100000 + Math.random() * 900000))
 }
 
-async function sendVerificationCode(email, code) {
+function sendVerificationCode(email, code) {
   const mailer = createMailer()
   if (!mailer) {
     console.log(`[DEV] Verification code for ${email}: ${code}`)
     return
   }
-  await mailer.sendMail({
-    from: process.env.SMTP_FROM,
-    to: email,
-    subject: 'Код подтверждения — Valorix AI',
-    html: `
-      <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
-        <h2 style="color:#1a1a2e">Подтверждение email</h2>
-        <p>Введите этот код на сайте для завершения регистрации:</p>
-        <div style="font-size:40px;font-weight:900;letter-spacing:8px;color:#2563eb;text-align:center;padding:24px;background:#eff6ff;border-radius:12px;margin:20px 0">
-          ${code}
+  // Fire-and-forget with 10s timeout to avoid blocking the response
+  const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Email timeout')), 10000))
+  Promise.race([
+    mailer.sendMail({
+      from: process.env.SMTP_FROM,
+      to: email,
+      subject: 'Код подтверждения — Valorix AI',
+      html: `
+        <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
+          <h2 style="color:#1a1a2e">Подтверждение email</h2>
+          <p>Введите этот код на сайте для завершения регистрации:</p>
+          <div style="font-size:40px;font-weight:900;letter-spacing:8px;color:#2563eb;text-align:center;padding:24px;background:#eff6ff;border-radius:12px;margin:20px 0">
+            ${code}
+          </div>
+          <p style="color:#94a3b8;font-size:13px">Код действует 15 минут. Если вы не регистрировались — проигнорируйте это письмо.</p>
         </div>
-        <p style="color:#94a3b8;font-size:13px">Код действует 15 минут. Если вы не регистрировались — проигнорируйте это письмо.</p>
-      </div>
-    `,
-  })
+      `,
+    }),
+    timeout,
+  ]).catch(err => console.error('Email send error:', err.message))
 }
 
 // POST /auth/register
@@ -84,7 +89,7 @@ router.post('/register', async (req, res) => {
       const code = generateCode()
       const exp = Date.now() + 15 * 60 * 1000
       db.prepare('UPDATE users SET verification_code = ?, verification_code_exp = ? WHERE id = ?').run(code, exp, existing.id)
-      try { await sendVerificationCode(email, code) } catch (err) { console.error('Email error:', err.message) }
+      sendVerificationCode(email, code)
       return res.status(200).json({ needsVerification: true, email })
     }
     return res.status(409).json({ error: 'Пользователь с таким email уже существует' })
@@ -129,7 +134,7 @@ router.post('/verify-email', async (req, res) => {
 })
 
 // POST /auth/resend-code
-router.post('/resend-code', async (req, res) => {
+router.post('/resend-code', (req, res) => {
   const email = sanitizeEmail(req.body.email)
   if (!email) return res.status(400).json({ error: 'Email обязателен' })
 
@@ -140,7 +145,7 @@ router.post('/resend-code', async (req, res) => {
   const exp = Date.now() + 15 * 60 * 1000
   db.prepare('UPDATE users SET verification_code = ?, verification_code_exp = ? WHERE id = ?').run(code, exp, user.id)
 
-  try { await sendVerificationCode(email, code) } catch (err) { console.error('Email error:', err.message) }
+  sendVerificationCode(email, code)
   res.json({ success: true })
 })
 
