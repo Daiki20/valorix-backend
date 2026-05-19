@@ -37,7 +37,7 @@ function httpsGet(url) {
 
 function openAIRequest(messages) {
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ model: 'gpt-4o', messages, temperature: 0.7, max_tokens: 1500 })
+    const body = JSON.stringify({ model: 'gpt-4o', messages, temperature: 0.7, max_tokens: 900 })
     const options = {
       hostname: 'api.openai.com',
       path: '/v1/chat/completions',
@@ -173,7 +173,7 @@ ${ODDS_TRANSLATION}
       "league": "лига из списка",
       "prediction": "Ставка на русском",
       "odds": 1.55,
-      "reasoning": "Детальное обоснование на русском: форма команд (последние 5 матчей), история личных встреч, ключевая статистика (голы, пропуски, xG), почему именно этот исход, какие факторы подтверждают ставку. Минимум 3-4 предложения."
+      "reasoning": "Обоснование на русском 2-3 предложения: форма команд, статистика голов/пропусков, почему именно этот исход выигрышный."
     }
   ],
   "total_odds": 3.47,
@@ -267,10 +267,9 @@ router.get('/today', async (req, res) => {
       }
     }
 
-    const [standard, high] = await Promise.all([
-      getOrGenerate('daily_express', 'express_purchases'),
-      getOrGenerate('daily_express_high', 'express_purchases_high'),
-    ])
+    const standard = await getOrGenerate('daily_express', 'express_purchases')
+    await new Promise(r => setTimeout(r, 3000))
+    const high = await getOrGenerate('daily_express_high', 'express_purchases_high')
 
     res.json({ standard, high })
   } catch (err) {
