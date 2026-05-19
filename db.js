@@ -97,6 +97,16 @@ db.exec(`
   );
 `)
 
+// Analysis cache (persists across deploys, TTL enforced in app)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS analysis_cache (
+    cache_key TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_analysis_cache_created ON analysis_cache(created_at);
+`)
+
 // Seed super-admin
 db.prepare(`
   UPDATE users SET is_admin = 1 WHERE email = 'andrey.pishev2021@yandex.ru'

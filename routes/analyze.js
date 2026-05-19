@@ -2,20 +2,28 @@ const express = require('express')
 const router = express.Router()
 const https = require('https')
 const { authenticate } = require('../middleware/auth')
+const db = require('../db')
 
-const analysisCache = new Map()
-const CACHE_TTL = 30 * 60 * 1000 // 30 minutes
+const CACHE_TTL = 3 * 60 * 60 * 1000 // 3 hours — stale before lineups announced
 
 function cacheGet(key) {
-  const e = analysisCache.get(key)
-  if (!e) return null
-  if (Date.now() - e.t > CACHE_TTL) { analysisCache.delete(key); return null }
-  return e.v
+  try {
+    const row = db.prepare('SELECT content, created_at FROM analysis_cache WHERE cache_key = ?').get(key)
+    if (!row) return null
+    if (Date.now() - row.created_at > CACHE_TTL) {
+      db.prepare('DELETE FROM analysis_cache WHERE cache_key = ?').run(key)
+      return null
+    }
+    return row.content
+  } catch { return null }
 }
 
 function cacheSet(key, val) {
-  if (analysisCache.size >= 500) analysisCache.delete(analysisCache.keys().next().value)
-  analysisCache.set(key, { v: val, t: Date.now() })
+  try {
+    db.prepare('INSERT OR REPLACE INTO analysis_cache (cache_key, content, created_at) VALUES (?, ?, ?)').run(key, val, Date.now())
+    // Cleanup old entries (keep max 1000)
+    db.prepare('DELETE FROM analysis_cache WHERE cache_key NOT IN (SELECT cache_key FROM analysis_cache ORDER BY created_at DESC LIMIT 1000)').run()
+  } catch {}
 }
 
 const RAPIDAPI_HOST = 'free-api-live-football-data.p.rapidapi.com'
