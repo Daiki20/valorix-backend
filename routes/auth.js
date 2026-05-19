@@ -39,31 +39,58 @@ function generateCode() {
 }
 
 function sendVerificationCode(email, code) {
+  const html = `
+    <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
+      <h2 style="color:#1a1a2e">Подтверждение email</h2>
+      <p>Введите этот код на сайте для завершения регистрации:</p>
+      <div style="font-size:40px;font-weight:900;letter-spacing:8px;color:#2563eb;text-align:center;padding:24px;background:#eff6ff;border-radius:12px;margin:20px 0">
+        ${code}
+      </div>
+      <p style="color:#94a3b8;font-size:13px">Код действует 15 минут. Если вы не регистрировались — проигнорируйте это письмо.</p>
+    </div>
+  `
+
+  // Resend API (preferred)
+  if (process.env.RESEND_API_KEY) {
+    const body = JSON.stringify({
+      from: process.env.SMTP_FROM || 'Valorix AI <noreply@valorix.ru>',
+      to: [email],
+      subject: 'Код подтверждения — Valorix AI',
+      html,
+    })
+    const req = https.request({
+      hostname: 'api.resend.com',
+      path: '/emails',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      },
+    }, res => {
+      let data = ''
+      res.on('data', chunk => data += chunk)
+      res.on('end', () => {
+        if (res.statusCode >= 400) console.error('Resend error:', data)
+        else console.log(`Email sent to ${email} via Resend`)
+      })
+    })
+    req.on('error', err => console.error('Resend request error:', err.message))
+    req.setTimeout(10000, () => { req.destroy(); console.error('Resend timeout') })
+    req.write(body)
+    req.end()
+    return
+  }
+
+  // Nodemailer fallback (SMTP)
   const mailer = createMailer()
   if (!mailer) {
     console.log(`[DEV] Verification code for ${email}: ${code}`)
     return
   }
-  // Fire-and-forget with 10s timeout to avoid blocking the response
-  const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Email timeout')), 10000))
-  Promise.race([
-    mailer.sendMail({
-      from: process.env.SMTP_FROM,
-      to: email,
-      subject: 'Код подтверждения — Valorix AI',
-      html: `
-        <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
-          <h2 style="color:#1a1a2e">Подтверждение email</h2>
-          <p>Введите этот код на сайте для завершения регистрации:</p>
-          <div style="font-size:40px;font-weight:900;letter-spacing:8px;color:#2563eb;text-align:center;padding:24px;background:#eff6ff;border-radius:12px;margin:20px 0">
-            ${code}
-          </div>
-          <p style="color:#94a3b8;font-size:13px">Код действует 15 минут. Если вы не регистрировались — проигнорируйте это письмо.</p>
-        </div>
-      `,
-    }),
-    timeout,
-  ]).catch(err => console.error('Email send error:', err.message))
+  mailer.sendMail({ from: process.env.SMTP_FROM, to: email, subject: 'Код подтверждения — Valorix AI', html })
+    .then(() => console.log(`Email sent to ${email} via SMTP`))
+    .catch(err => console.error('SMTP error:', err.message))
 }
 
 // POST /auth/register
