@@ -34,6 +34,33 @@ function createMailer() {
 }
 
 
+function generateCode() {
+  return String(Math.floor(100000 + Math.random() * 900000))
+}
+
+async function sendVerificationCode(email, code) {
+  const mailer = createMailer()
+  if (!mailer) {
+    console.log(`[DEV] Verification code for ${email}: ${code}`)
+    return
+  }
+  await mailer.sendMail({
+    from: process.env.SMTP_FROM,
+    to: email,
+    subject: 'Код подтверждения — Valorix AI',
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
+        <h2 style="color:#1a1a2e">Подтверждение email</h2>
+        <p>Введите этот код на сайте для завершения регистрации:</p>
+        <div style="font-size:40px;font-weight:900;letter-spacing:8px;color:#2563eb;text-align:center;padding:24px;background:#eff6ff;border-radius:12px;margin:20px 0">
+          ${code}
+        </div>
+        <p style="color:#94a3b8;font-size:13px">Код действует 15 минут. Если вы не регистрировались — проигнорируйте это письмо.</p>
+      </div>
+    `,
+  })
+}
+
 // POST /auth/register
 router.post('/register', async (req, res) => {
   const email = sanitizeEmail(req.body.email)
@@ -50,24 +77,71 @@ router.post('/register', async (req, res) => {
     return res.status(400).json({ error: 'Неверный формат email' })
   }
 
-  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email)
+  const existing = db.prepare('SELECT id, is_verified FROM users WHERE email = ?').get(email)
   if (existing) {
+    if (!existing.is_verified) {
+      // Resend code for unverified account
+      const code = generateCode()
+      const exp = Date.now() + 15 * 60 * 1000
+      db.prepare('UPDATE users SET verification_code = ?, verification_code_exp = ? WHERE id = ?').run(code, exp, existing.id)
+      try { await sendVerificationCode(email, code) } catch (err) { console.error('Email error:', err.message) }
+      return res.status(200).json({ needsVerification: true, email })
+    }
     return res.status(409).json({ error: 'Пользователь с таким email уже существует' })
   }
 
   const password_hash = await bcrypt.hash(password, 12)
-  const result = db.prepare(
-    'INSERT INTO users (email, password_hash, username, coins) VALUES (?, ?, ?, 38)'
-  ).run(email, password_hash, username || email.split('@')[0])
+  const code = generateCode()
+  const exp = Date.now() + 15 * 60 * 1000
 
   db.prepare(
-    'INSERT INTO coin_transactions (user_id, amount, type, description) VALUES (?, 38, ?, ?)'
-  ).run(result.lastInsertRowid, 'bonus', 'Приветственный бонус')
+    'INSERT INTO users (email, password_hash, username, coins, is_verified, verification_code, verification_code_exp) VALUES (?, ?, ?, 0, 0, ?, ?)'
+  ).run(email, password_hash, username || email.split('@')[0], code, exp)
 
-  const user = db.prepare('SELECT id, email, username, coins, is_admin, is_blocked FROM users WHERE id = ?').get(result.lastInsertRowid)
-  const token = makeToken(user.id)
+  try { await sendVerificationCode(email, code) } catch (err) { console.error('Email error:', err.message) }
 
-  res.status(201).json({ token, user })
+  res.status(201).json({ needsVerification: true, email })
+})
+
+// POST /auth/verify-email
+router.post('/verify-email', async (req, res) => {
+  const email = sanitizeEmail(req.body.email)
+  const code = sanitizeString(req.body.code, 10)
+
+  if (!email || !code) return res.status(400).json({ error: 'Email и код обязательны' })
+
+  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email)
+  if (!user) return res.status(400).json({ error: 'Пользователь не найден' })
+  if (user.is_verified) return res.status(400).json({ error: 'Email уже подтверждён' })
+  if (!user.verification_code || user.verification_code !== code) {
+    return res.status(400).json({ error: 'Неверный код' })
+  }
+  if (Date.now() > user.verification_code_exp) {
+    return res.status(400).json({ error: 'Код устарел. Запросите новый.' })
+  }
+
+  db.prepare('UPDATE users SET is_verified = 1, coins = 38, verification_code = NULL, verification_code_exp = NULL WHERE id = ?').run(user.id)
+  db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description) VALUES (?, 38, ?, ?)').run(user.id, 'bonus', 'Приветственный бонус')
+
+  const updated = db.prepare('SELECT id, email, username, coins, is_admin, is_blocked, is_verified FROM users WHERE id = ?').get(user.id)
+  const token = makeToken(updated.id)
+  res.json({ token, user: updated })
+})
+
+// POST /auth/resend-code
+router.post('/resend-code', async (req, res) => {
+  const email = sanitizeEmail(req.body.email)
+  if (!email) return res.status(400).json({ error: 'Email обязателен' })
+
+  const user = db.prepare('SELECT id, is_verified FROM users WHERE email = ?').get(email)
+  if (!user || user.is_verified) return res.json({ success: true }) // silent
+
+  const code = generateCode()
+  const exp = Date.now() + 15 * 60 * 1000
+  db.prepare('UPDATE users SET verification_code = ?, verification_code_exp = ? WHERE id = ?').run(code, exp, user.id)
+
+  try { await sendVerificationCode(email, code) } catch (err) { console.error('Email error:', err.message) }
+  res.json({ success: true })
 })
 
 // POST /auth/login
@@ -87,6 +161,10 @@ router.post('/login', async (req, res) => {
 
   if (user.is_blocked) {
     return res.status(403).json({ error: 'Аккаунт заблокирован. Обратитесь в поддержку.' })
+  }
+
+  if (!user.is_verified) {
+    return res.status(403).json({ error: 'Email не подтверждён. Проверьте почту.', needsVerification: true, email: user.email })
   }
 
   const valid = await bcrypt.compare(password, user.password_hash)

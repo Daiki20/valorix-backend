@@ -15,6 +15,7 @@ db.exec(`
     coins INTEGER NOT NULL DEFAULT 38,
     is_admin INTEGER NOT NULL DEFAULT 0,
     is_blocked INTEGER NOT NULL DEFAULT 0,
+    is_verified INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -51,10 +52,14 @@ db.exec(`
 
 // Add new columns to existing tables if they don't exist yet
 const userCols = db.prepare("PRAGMA table_info(users)").all().map(c => c.name)
-if (!userCols.includes('is_admin'))          db.exec("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
-if (!userCols.includes('is_blocked'))        db.exec("ALTER TABLE users ADD COLUMN is_blocked INTEGER NOT NULL DEFAULT 0")
-if (!userCols.includes('reset_token'))       db.exec("ALTER TABLE users ADD COLUMN reset_token TEXT")
-if (!userCols.includes('reset_token_exp'))   db.exec("ALTER TABLE users ADD COLUMN reset_token_exp INTEGER")
+if (!userCols.includes('is_admin'))               db.exec("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+if (!userCols.includes('is_blocked'))             db.exec("ALTER TABLE users ADD COLUMN is_blocked INTEGER NOT NULL DEFAULT 0")
+if (!userCols.includes('reset_token'))            db.exec("ALTER TABLE users ADD COLUMN reset_token TEXT")
+if (!userCols.includes('reset_token_exp'))        db.exec("ALTER TABLE users ADD COLUMN reset_token_exp INTEGER")
+// Existing users get is_verified=1 automatically via DEFAULT 1
+if (!userCols.includes('is_verified'))            db.exec("ALTER TABLE users ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 1")
+if (!userCols.includes('verification_code'))      db.exec("ALTER TABLE users ADD COLUMN verification_code TEXT")
+if (!userCols.includes('verification_code_exp'))  db.exec("ALTER TABLE users ADD COLUMN verification_code_exp INTEGER")
 
 const analysisCols2 = db.prepare("PRAGMA table_info(analyses)").all().map(c => c.name)
 if (!analysisCols2.includes('share_token')) {
