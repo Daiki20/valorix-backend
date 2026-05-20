@@ -196,33 +196,8 @@ ${ODDS_TRANSLATION}
     return data
   }
 
-  // Fallback
-  const isHigh = type === 'high'
-  const prompt = `Ты — эксперт по ставкам на спорт. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс из матчей топовых лиг на ${targetDate}.
-
-- 2-3 матча из: Примера, АПЛ, Серия А, Бундеслига, Лига 1, Лига чемпионов, Лига Европы
-${isHigh
-  ? '- Итоговый коэффициент НЕ МЕНЕЕ 4.00, каждый исход от 1.40'
-  : '- Итоговый коэффициент 2.00–4.00, минимальный коэффициент 1.33'}
-
-Ответь ТОЛЬКО валидным JSON:
-{
-  "date": "${targetDate}",
-  "picks": [{"home":"...","away":"...","league":"...","prediction":"...","odds":1.55,"reasoning":"..."}],
-  "total_odds": 3.47,
-  "summary": "..."
-}`
-
-  const content = await openAIRequest([
-    { role: 'system', content: 'Ты эксперт по ставкам. Отвечай только валидным JSON.' },
-    { role: 'user', content: prompt },
-  ])
-  const jsonMatch = content.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) throw new Error('Invalid JSON from OpenAI')
-  let data
-  try { data = JSON.parse(jsonMatch[0]) } catch { throw new Error('JSON parse failed') }
-  if (!data.picks || data.picks.length < 2) throw new Error('Not enough picks')
-  return data
+  // Нет реальных матчей — не генерируем выдуманные
+  throw new Error(`Недостаточно реальных матчей на ${targetDate} для генерации экспресса`)
 }
 
 // ── GET /express/today ────────────────────────────────────────────────────────
