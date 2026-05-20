@@ -36,6 +36,12 @@ function getTodayDate() {
   return new Date().toISOString().slice(0, 10)
 }
 
+function getDateOffset(days) {
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
 function httpsGet(url) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, (res) => {
@@ -83,7 +89,7 @@ function openAIRequest(messages) {
 
 async function fetchRealMatches(targetDate) {
   const key = process.env.SSTATS_API_KEY
-  if (!key) return []
+  if (!key) return { matches: [], date: targetDate }
 
   const results = await Promise.all(
     TOP_LEAGUE_IDS.map(id =>
@@ -94,9 +100,23 @@ async function fetchRealMatches(targetDate) {
 
   const allGames = results.flatMap(r => Array.isArray(r.data) ? r.data : [])
 
-  return allGames
-    .filter(g => g.date && g.homeTeam?.name && g.awayTeam?.name && g.date.slice(0, 10) === targetDate)
-    .map(g => ({ id: g.id, home: translateTeam(g.homeTeam.name), away: translateTeam(g.awayTeam.name), league: g.season?.league?.name || 'Unknown' }))
+  // Ищем матчи на targetDate, +1, +2 день — берём тот где больше матчей
+  const candidates = [targetDate, getDateOffset(2), getDateOffset(3)]
+  let bestDate = targetDate
+  let bestMatches = []
+
+  for (const date of candidates) {
+    const matches = allGames
+      .filter(g => g.date && g.homeTeam?.name && g.awayTeam?.name && g.date.slice(0, 10) === date)
+      .map(g => ({ id: g.id, home: translateTeam(g.homeTeam.name), away: translateTeam(g.awayTeam.name), league: g.season?.league?.name || 'Unknown' }))
+    if (matches.length > bestMatches.length) {
+      bestMatches = matches
+      bestDate = date
+    }
+    if (bestMatches.length >= 5) break // достаточно матчей
+  }
+
+  return { matches: bestMatches, date: bestDate }
 }
 
 async function fetchOddsText(gameId) {
@@ -137,7 +157,7 @@ const ODDS_TRANSLATION = `Перевод названий ставок на ру
 - Asian Handicap Away N → Фора гостей (N)`
 
 async function generateExpress(targetDate, type = 'standard') {
-  const realMatches = await fetchRealMatches(targetDate)
+  const { matches: realMatches, date: actualDate } = await fetchRealMatches(targetDate)
 
   if (realMatches.length >= 2) {
     const oddsTexts = await Promise.all(realMatches.map(m => fetchOddsText(m.id)))
@@ -164,9 +184,9 @@ async function generateExpress(targetDate, type = 'standard') {
 - Выбирай надёжные исходы с высокой вероятностью прохода >65%
 - 2-3 события, минимальный коэффициент 1.33, максимальный 2.20`
 
-    const prompt = `Ты — эксперт по ставкам на спорт. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс из РЕАЛЬНОГО расписания на ${targetDate}.
+    const prompt = `Ты — эксперт по ставкам на спорт. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс из РЕАЛЬНОГО расписания на ${actualDate}.
 
-РЕАЛЬНЫЕ МАТЧИ С КОЭФФИЦИЕНТАМИ НА ${targetDate}:
+РЕАЛЬНЫЕ МАТЧИ С КОЭФФИЦИЕНТАМИ НА ${actualDate}:
 ${matchBlocks}
 
 Требования:
@@ -181,7 +201,7 @@ ${ODDS_TRANSLATION}
 
 Ответь ТОЛЬКО валидным JSON:
 {
-  "date": "${targetDate}",
+  "date": "${actualDate}",
   "picks": [
     {
       "home": "название из списка",
