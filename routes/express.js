@@ -10,6 +10,22 @@ const EXPRESS_COST_HIGH = 49
 
 const TOP_LEAGUE_IDS = [2, 3, 848, 39, 140, 135, 78, 61, 235]
 
+// Mutex — предотвращает параллельные генерации одного экспресса
+const generating = {}
+async function withMutex(key, fn) {
+  if (generating[key]) {
+    // Ждём пока другой запрос закончит (до 30 сек)
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => setTimeout(r, 500))
+      if (!generating[key]) break
+    }
+    return null // другой запрос уже сохранил в БД
+  }
+  generating[key] = true
+  try { return await fn() }
+  finally { generating[key] = false }
+}
+
 function getTomorrowDate() {
   const d = new Date()
   d.setDate(d.getDate() + 1)
@@ -219,11 +235,18 @@ router.get('/today', async (req, res) => {
       const type = table === 'daily_express' ? 'standard' : 'high'
       let row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
       if (!row) {
-        try {
-          const data = await generateExpress(expressDate, type)
-          db.prepare(`INSERT OR IGNORE INTO ${table} (date, data) VALUES (?, ?)`).run(expressDate, JSON.stringify(data))
-          row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
-        } catch { return null }
+        await withMutex(`${table}_${expressDate}`, async () => {
+          // Проверяем снова после получения мьютекса
+          const existing = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
+          if (existing) { row = existing; return }
+          try {
+            const data = await generateExpress(expressDate, type)
+            db.prepare(`INSERT OR IGNORE INTO ${table} (date, data) VALUES (?, ?)`).run(expressDate, JSON.stringify(data))
+            row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
+          } catch { return null }
+        })
+        // Если мьютекс вернул null — другой запрос уже сохранил
+        if (!row) row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
       }
       let expressData
       try { expressData = JSON.parse(row.data) } catch { return null }
