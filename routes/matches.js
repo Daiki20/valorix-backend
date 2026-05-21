@@ -6,8 +6,10 @@ const SSTATS_BASE = 'https://api.sstats.net'
 
 let upcomingCache = { data: null, ts: 0 }
 let liveCache = { data: null, ts: 0 }
+let hockeyCache = { data: null, ts: 0 }
 const UPCOMING_TTL = 15 * 60 * 1000
 const LIVE_TTL = 60 * 1000
+const HOCKEY_TTL = 15 * 60 * 1000
 
 function sstatsGet(path, params = {}) {
   return new Promise((resolve, reject) => {
@@ -88,6 +90,164 @@ router.get('/live', async (req, res) => {
     console.error('[matches/live]', err.message)
     res.json({ data: [] })
   }
+})
+
+// ── GET /matches/hockey ── NHL (free API) + КХЛ/ВХЛ via sstats ──────────────
+function httpsGetJson(hostname, path) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname,
+      path,
+      method: 'GET',
+      timeout: 8000,
+      headers: { 'User-Agent': 'valorix-app/1.0', 'Accept': 'application/json' },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)) }
+        catch { reject(new Error('JSON parse error')) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    req.end()
+  })
+}
+
+function formatHockeyDate(dateStr) {
+  if (!dateStr) return ''
+  try {
+    const d = new Date(dateStr)
+    return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', timeZone: 'Europe/Moscow' }) +
+      ' · ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' })
+  } catch { return dateStr }
+}
+
+// Known KHL team names ru translation
+const KHL_TEAMS_RU = {
+  'CSKA': 'ЦСКА', 'SKA': 'СКА', 'Ak Bars': 'Ак Барс', 'Avangard': 'Авангард',
+  'Metallurg Magnitogorsk': 'Металлург Мг', 'Lokomotiv': 'Локомотив',
+  'Dinamo Moscow': 'Динамо Москва', 'Dynamo Moscow': 'Динамо Москва',
+  'Spartak': 'Спартак', 'Torpedo': 'Торпедо', 'Traktor': 'Трактор',
+  'Salavat Yulaev': 'Салават Юлаев', 'Neftekhimik': 'Нефтехимик',
+  'Severstal': 'Северсталь', 'Amur': 'Амур', 'Sibir': 'Сибирь',
+  'Yugra': 'Югра', 'Kunlun': 'Куньлунь', 'Barys': 'Барыс',
+  'Dinamo Riga': 'Динамо Рига', 'Dinamo Minsk': 'Динамо Минск',
+  'Admiral': 'Адмирал', 'Lada': 'Лада', 'HC Sochi': 'ХК Сочи',
+  'Vityaz': 'Витязь', 'Metallurg Novokuznetsk': 'Металлург Нк',
+}
+function translateKHL(name) {
+  for (const [en, ru] of Object.entries(KHL_TEAMS_RU)) {
+    if (name.includes(en)) return ru
+  }
+  return name
+}
+
+// NHL team names (English → readable)
+const NHL_TEAMS = {
+  'ANA': 'Анахайм Дакс', 'ARI': 'Аризона Койотис', 'UTH': 'Юта Хоккей Клаб',
+  'BOS': 'Бостон Брюинс', 'BUF': 'Баффало Сэйбрс', 'CGY': 'Калгари Флэймс',
+  'CAR': 'Каролина Харрикейнс', 'CHI': 'Чикаго Блэкхокс', 'COL': 'Колорадо Эвэланш',
+  'CBJ': 'Коламбус Блю Джекетс', 'DAL': 'Даллас Старс', 'DET': 'Детройт Ред Уингс',
+  'EDM': 'Эдмонтон Ойлерс', 'FLA': 'Флорида Пантерс', 'LAK': 'Лос-Анджелес Кингс',
+  'MIN': 'Миннесота Уайлд', 'MTL': 'Монреаль Канадьенс', 'NSH': 'Нэшвилл Предаторс',
+  'NJD': 'Нью-Джерси Девилс', 'NYI': 'Нью-Йорк Айлендерс', 'NYR': 'Нью-Йорк Рейнджерс',
+  'OTT': 'Оттава Сенаторс', 'PHI': 'Филадельфия Флайерс', 'PIT': 'Питтсбург Пингвинс',
+  'SJS': 'Сан-Хосе Шаркс', 'SEA': 'Сиэтл Кракен', 'STL': 'Сент-Луис Блюз',
+  'TBL': 'Тампа-Бэй Лайтнинг', 'TOR': 'Торонто Мэйпл Лифс', 'VAN': 'Ванкувер Кэнакс',
+  'VGK': 'Вегас Голден Найтс', 'WSH': 'Вашингтон Кэпиталс', 'WPG': 'Виннипег Джетс',
+}
+
+router.get('/hockey', async (req, res) => {
+  if (hockeyCache.data && Date.now() - hockeyCache.ts < HOCKEY_TTL) {
+    return res.json({ data: hockeyCache.data, cached: true })
+  }
+
+  const games = []
+
+  // 1. NHL Official Free API
+  try {
+    const nhlData = await httpsGetJson('api-web.nhle.com', '/v1/schedule/now')
+    const gameWeek = nhlData.gameWeek || []
+    for (const day of gameWeek) {
+      for (const game of (day.games || [])) {
+        // Only upcoming (FUT/PRE) or live
+        const state = game.gameState
+        if (state === 'OFF' || state === 'FINAL') continue
+        const homeAbbr = game.homeTeam?.abbrev || ''
+        const awayAbbr = game.awayTeam?.abbrev || ''
+        const home = NHL_TEAMS[homeAbbr] ||
+          `${game.homeTeam?.placeName?.default || ''} ${game.homeTeam?.commonName?.default || ''}`.trim()
+        const away = NHL_TEAMS[awayAbbr] ||
+          `${game.awayTeam?.placeName?.default || ''} ${game.awayTeam?.commonName?.default || ''}`.trim()
+        const isLive = state === 'LIVE' || state === 'CRIT'
+        const score = isLive
+          ? `${game.homeTeam?.score ?? 0}:${game.awayTeam?.score ?? 0}`
+          : null
+        games.push({
+          id: `nhl_${game.id}`,
+          home,
+          away,
+          homeAbbr,
+          awayAbbr,
+          league: 'НХЛ',
+          sport: 'hockey',
+          date: formatHockeyDate(game.startTimeUTC),
+          rawDate: game.startTimeUTC,
+          isLive,
+          score,
+          period: game.periodDescriptor?.periodType,
+        })
+      }
+    }
+    console.log(`[matches/hockey] NHL: ${games.length} games`)
+  } catch (err) {
+    console.error('[matches/hockey] NHL error:', err.message)
+  }
+
+  // 2. КХЛ / ВХЛ / МХЛ via sstats (if API key available)
+  if (process.env.SSTATS_API_KEY) {
+    // Попробуем распространённые ID хоккейных лиг в sstats
+    const HOCKEY_IDS = [282, 283, 284, 285, 289, 290]
+    try {
+      const results = await Promise.allSettled(
+        HOCKEY_IDS.map(id =>
+          sstatsGet('/Games/list', { upcoming: true, leagueid: id, limit: 5 })
+        )
+      )
+      const khlGames = results.flatMap(r =>
+        r.status === 'fulfilled' ? (r.value?.data || []) : []
+      )
+      for (const g of khlGames) {
+        if (!g.homeTeam?.name || !g.awayTeam?.name) continue
+        games.push({
+          id: `sstats_${g.id}`,
+          home: translateKHL(g.homeTeam.name),
+          away: translateKHL(g.awayTeam.name),
+          league: g.season?.league?.name || 'КХЛ',
+          sport: 'hockey',
+          date: formatHockeyDate(g.date),
+          rawDate: g.date,
+        })
+      }
+      console.log(`[matches/hockey] sstats KHL: ${khlGames.length} games`)
+    } catch (err) {
+      console.error('[matches/hockey] sstats hockey error:', err.message)
+    }
+  }
+
+  // Sort: live first, then by date
+  games.sort((a, b) => {
+    if (a.isLive && !b.isLive) return -1
+    if (!a.isLive && b.isLive) return 1
+    return new Date(a.rawDate || 0) - new Date(b.rawDate || 0)
+  })
+
+  hockeyCache = { data: games, ts: Date.now() }
+  console.log(`[matches/hockey] total: ${games.length} games, cached for 15 min`)
+  res.json({ data: games })
 })
 
 module.exports = router
