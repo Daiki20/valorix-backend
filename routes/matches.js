@@ -219,15 +219,27 @@ function normalizeAllSportsMatch(m, sport, leagueName) {
   }
 }
 
-// Key hockey leagues in AllSportsApi (IDs confirmed from their docs)
-// КХЛ=28, НХЛ=35, ВХЛ=182, МХЛ=291, AHL=36, SHL=39, Liiga=40
-const HOCKEY_LEAGUES = [
-  { id: 28, name: 'КХЛ' },
-  { id: 35, name: 'НХЛ' },
-  { id: 182, name: 'ВХЛ' },
-  { id: 39, name: 'SHL' },
-  { id: 40, name: 'Liiga' },
+// Leagues to show (filter by name from AllSportsApi response)
+const HOCKEY_LEAGUE_FILTER = [
+  'khl', 'кхл', 'kontinental',
+  'nhl', 'нхл', 'national hockey',
+  'vhl', 'вхл',
+  'mhl', 'юхл', 'молодёж', 'junior',
+  'world championship', 'чемпионат мира', 'iihf', 'mundial',
+  'shl', 'liiga', 'del ', 'nla', 'ahl',
+  'playoffs', 'плей-офф', 'финал', 'final',
 ]
+function isImportantHockeyLeague(leagueName) {
+  if (!leagueName) return false
+  const l = leagueName.toLowerCase()
+  return HOCKEY_LEAGUE_FILTER.some(f => l.includes(f))
+}
+
+// Format date as DD/MM/YYYY for AllSportsApi
+function toAllSportsDate(isoDate) {
+  const [y, m, d] = isoDate.split('-')
+  return `${d}/${m}/${y}`
+}
 
 router.get('/hockey', async (req, res) => {
   if (hockeyCache.data && Date.now() - hockeyCache.ts < HOCKEY_TTL) {
@@ -254,7 +266,7 @@ router.get('/hockey', async (req, res) => {
         games.push({
           id: `nhl_${game.id}`,
           home, away,
-          league: 'НХЛ',
+          league: 'НХЛ · Плей-офф',
           sport: 'hockey',
           date: formatHockeyDate(game.startTimeUTC),
           rawDate: game.startTimeUTC,
@@ -263,40 +275,45 @@ router.get('/hockey', async (req, res) => {
         })
       }
     }
-    console.log(`[matches/hockey] NHL free API: ${games.length} games`)
+    console.log(`[matches/hockey] NHL: ${games.length} games`)
   } catch (err) {
     console.error('[matches/hockey] NHL error:', err.message)
   }
 
-  // 2. КХЛ + другие лиги via AllSportsApi
+  // 2. AllSportsApi — ALL hockey matches by date (no league ID filter)
   if (process.env.RAPIDAPI_KEY) {
     const today = new Date().toISOString().slice(0, 10)
     const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10)
+    const todayAS = toAllSportsDate(today)
+    const tomorrowAS = toAllSportsDate(tomorrow)
 
-    const results = await Promise.allSettled(
-      HOCKEY_LEAGUES.map(lg =>
-        allSportsGet('hockey', `matches/?met=Fixtures&leagueId=${lg.id}&from=${today}&to=${tomorrow}`)
-          .catch(() => allSportsGet('hockey', `matches/${today}?leagueId=${lg.id}`))
-      )
-    )
+    const [todayRes, tomorrowRes] = await Promise.allSettled([
+      allSportsGet('hockey', `matches/${todayAS}`),
+      allSportsGet('hockey', `matches/${tomorrowAS}`),
+    ])
 
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i]
-      if (r.status !== 'fulfilled') continue
+    for (const r of [todayRes, tomorrowRes]) {
+      if (r.status !== 'fulfilled') {
+        console.log('[matches/hockey] AllSportsApi error:', r.reason?.message)
+        continue
+      }
+      console.log('[matches/hockey] AllSportsApi raw keys:', Object.keys(r.value || {}))
       const matches = r.value?.result || r.value?.data || r.value?.events || r.value?.matches || []
       for (const m of (Array.isArray(matches) ? matches : [])) {
-        const normalized = normalizeAllSportsMatch(m, 'hockey', HOCKEY_LEAGUES[i].name)
+        // Filter: only important leagues
+        const leagueName = m.league_name || m.event_competition || ''
+        if (!isImportantHockeyLeague(leagueName)) continue
+        const normalized = normalizeAllSportsMatch(m, 'hockey', leagueName)
         if (normalized && !games.find(g => g.home === normalized.home && g.away === normalized.away)) {
           games.push(normalized)
         }
       }
     }
-    console.log(`[matches/hockey] AllSportsApi: total ${games.length} games`)
+    console.log(`[matches/hockey] after AllSportsApi: ${games.length} total`)
   } else {
     console.log('[matches/hockey] RAPIDAPI_KEY not set — only NHL available')
   }
 
-  // Sort: live first, then by date
   games.sort((a, b) => {
     if (a.isLive && !b.isLive) return -1
     if (!a.isLive && b.isLive) return 1
@@ -309,13 +326,18 @@ router.get('/hockey', async (req, res) => {
 })
 
 // ── GET /matches/basketball ───────────────────────────────────────────────────
-// НБА=12, Евролига=4, ВТБ Лига=16, Испания ACB=8, Турция BSL=13
-const BASKETBALL_LEAGUES = [
-  { id: 12, name: 'НБА' },
-  { id: 4,  name: 'Евролига' },
-  { id: 16, name: 'ВТБ Лига' },
-  { id: 8,  name: 'ACB Испания' },
+const BASKETBALL_LEAGUE_FILTER = [
+  'nba', 'нба', 'euroleague', 'евролига', 'eurocup',
+  'vtb', 'втб', 'united league',
+  'acb', 'bsl', 'lnb', 'bbl', 'bnl',
+  'playoffs', 'плей-офф', 'finals', 'финал',
+  'nbl', 'ncaa', 'fiba',
 ]
+function isImportantBasketballLeague(name) {
+  if (!name) return false
+  const l = name.toLowerCase()
+  return BASKETBALL_LEAGUE_FILTER.some(f => l.includes(f))
+}
 
 router.get('/basketball', async (req, res) => {
   if (basketballCache.data && Date.now() - basketballCache.ts < BASKETBALL_TTL) {
@@ -328,20 +350,21 @@ router.get('/basketball', async (req, res) => {
   const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10)
   const games = []
 
-  const results = await Promise.allSettled(
-    BASKETBALL_LEAGUES.map(lg =>
-      allSportsGet('basketball', `matches/?met=Fixtures&leagueId=${lg.id}&from=${today}&to=${tomorrow}`)
-        .catch(() => allSportsGet('basketball', `matches/${today}?leagueId=${lg.id}`))
-    )
-  )
+  const [todayRes, tomorrowRes] = await Promise.allSettled([
+    allSportsGet('basketball', `matches/${toAllSportsDate(today)}`),
+    allSportsGet('basketball', `matches/${toAllSportsDate(tomorrow)}`),
+  ])
 
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i]
+  for (const r of [todayRes, tomorrowRes]) {
     if (r.status !== 'fulfilled') continue
     const matches = r.value?.result || r.value?.data || r.value?.events || r.value?.matches || []
     for (const m of (Array.isArray(matches) ? matches : [])) {
-      const normalized = normalizeAllSportsMatch(m, 'basketball', BASKETBALL_LEAGUES[i].name)
-      if (normalized) games.push(normalized)
+      const leagueName = m.league_name || m.event_competition || ''
+      if (!isImportantBasketballLeague(leagueName)) continue
+      const normalized = normalizeAllSportsMatch(m, 'basketball', leagueName)
+      if (normalized && !games.find(g => g.home === normalized.home && g.away === normalized.away)) {
+        games.push(normalized)
+      }
     }
   }
 
