@@ -8,10 +8,12 @@ let upcomingCache = { data: null, ts: 0 }
 let liveCache = { data: null, ts: 0 }
 let hockeyCache = { data: null, ts: 0 }
 let basketballCache = { data: null, ts: 0 }
+let esportsCache = { data: null, ts: 0 }
 const UPCOMING_TTL = 15 * 60 * 1000
 const LIVE_TTL = 60 * 1000
 const HOCKEY_TTL = 6 * 60 * 60 * 1000   // 6 hours — saves RapidAPI quota (100 req/day BASIC)
 const BASKETBALL_TTL = 6 * 60 * 60 * 1000
+const ESPORTS_TTL = 60 * 60 * 1000       // 1 hour
 
 function sstatsGet(path, params = {}) {
   return new Promise((resolve, reject) => {
@@ -495,6 +497,130 @@ router.get('/basketball', async (req, res) => {
 
   basketballCache = { data: games, ts: Date.now() }
   console.log(`[matches/basketball] cached ${games.length} games for 15 min`)
+  res.json({ data: games })
+})
+
+// ── Esports (esports-data.p.rapidapi.com) ────────────────────────────────────
+const ESPORTS_HOST = 'esports-data.p.rapidapi.com'
+
+function esportsGetPath(path, params = {}) {
+  const key = process.env.RAPIDAPI_KEY
+  const qs = new URLSearchParams(params).toString()
+  const fullPath = qs ? `${path}?${qs}` : path
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: ESPORTS_HOST,
+      path: fullPath,
+      method: 'GET',
+      timeout: 8000,
+      headers: {
+        'x-rapidapi-host': ESPORTS_HOST,
+        'x-rapidapi-key': key,
+        'Accept': 'application/json',
+      },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)) }
+        catch { reject(new Error('JSON parse error')) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    req.end()
+  })
+}
+
+// game key → display name
+const ESPORTS_GAME_DISPLAY = { csgo: 'CS2', dota2: 'Dota 2', valorant: 'Valorant', lol: 'LoL' }
+// game key used by frontend/GPT
+const ESPORTS_GAME_FRONTEND = { csgo: 'cs2', dota2: 'dota2', valorant: 'valorant', lol: 'lol' }
+
+function normalizeEsportsMatch(m, gameKey) {
+  const team1 = m.team1?.name || m.home_team?.name || m.radiant?.name || ''
+  const team2 = m.team2?.name || m.away_team?.name || m.dire?.name || ''
+  if (!team1 || !team2) return null
+
+  const tournament = m.tournament?.name || m.league?.name || m.event?.name || m.series_name || ''
+  const dateRaw = m.start_time || m.begins_at || m.scheduled_at || m.date || null
+  const gameDisplay = ESPORTS_GAME_DISPLAY[gameKey] || gameKey
+  const gameFrontend = ESPORTS_GAME_FRONTEND[gameKey] || gameKey
+
+  const isLive = m.status === 'running' || m.live === true || m.status === 'inprogress'
+  let score = null
+  if (isLive) {
+    const s1 = m.team1?.score ?? m.team1_score ?? 0
+    const s2 = m.team2?.score ?? m.team2_score ?? 0
+    score = `${s1}:${s2}`
+  }
+
+  return {
+    id: `es_${gameKey}_${m.id || m.match_id || Math.random()}`,
+    home: team1,
+    away: team2,
+    league: tournament ? `${gameDisplay} · ${tournament}` : gameDisplay,
+    game: gameFrontend,
+    sport: 'esports',
+    date: dateRaw ? formatHockeyDate(dateRaw) : '',
+    rawDate: dateRaw || new Date().toISOString(),
+    isLive,
+    score,
+    odds1x2: null,
+  }
+}
+
+// GET /matches/esports — cached 1 hour
+router.get('/esports', async (req, res) => {
+  if (esportsCache.data && Date.now() - esportsCache.ts < ESPORTS_TTL) {
+    return res.json({ data: esportsCache.data, cached: true })
+  }
+
+  if (!process.env.RAPIDAPI_KEY) return res.json({ data: [] })
+
+  const ESPORTS_GAMES = ['csgo', 'dota2', 'valorant', 'lol']
+  const games = []
+
+  const results = await Promise.allSettled(
+    ESPORTS_GAMES.map(gameId =>
+      esportsGetPath('/matches/upcoming', { game: gameId, per_page: 20, page: 1 })
+        .then(data => ({ gameId, data }))
+    )
+  )
+
+  for (const r of results) {
+    if (r.status !== 'fulfilled') {
+      console.error('[matches/esports] failed:', r.reason?.message)
+      continue
+    }
+    const { gameId, data } = r.value
+    const matches = data?.data || data?.matches || (Array.isArray(data) ? data : [])
+    let added = 0
+    for (const m of (Array.isArray(matches) ? matches : [])) {
+      const normalized = normalizeEsportsMatch(m, gameId)
+      if (!normalized) continue
+      if (games.some(g => g.home === normalized.home && g.away === normalized.away)) continue
+      games.push(normalized)
+      added++
+    }
+    console.log(`[matches/esports] ${gameId}: ${added} matches added`)
+  }
+
+  games.sort((a, b) => {
+    if (a.isLive && !b.isLive) return -1
+    if (!a.isLive && b.isLive) return 1
+    return new Date(a.rawDate || 0) - new Date(b.rawDate || 0)
+  })
+
+  if (games.length > 0) {
+    esportsCache = { data: games, ts: Date.now() }
+  } else {
+    // Cache empty 15 min to avoid hammering API
+    esportsCache = { data: [], ts: Date.now() - (ESPORTS_TTL - 15 * 60 * 1000) }
+  }
+
+  console.log(`[matches/esports] total ${games.length} matches cached`)
   res.json({ data: games })
 })
 
