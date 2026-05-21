@@ -9,18 +9,16 @@ const EXPRESS_COST_STANDARD = 39
 const EXPRESS_COST_HIGH = 49
 
 // Только топ-лиги которые точно есть на BetBoom/Fonbet/Winline
+// Убрали UECL/Eredivisie/Portuguesa — там попадаются команды которых нет на русских букмекерах
 const ALL_LEAGUE_IDS = [
   2,   // Champions League
   3,   // Europa League
-  848, // Europa Conference League
   39,  // Premier League
   140, // La Liga
   135, // Serie A
   78,  // Bundesliga 1
   61,  // Ligue 1
   235, // Russian Premier League
-  94,  // Primeira Liga (Portugal)
-  88,  // Eredivisie
 ]
 
 // Mutex — предотвращает параллельные генерации одного экспресса
