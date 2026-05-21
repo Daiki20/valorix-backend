@@ -10,8 +10,8 @@ let hockeyCache = { data: null, ts: 0 }
 let basketballCache = { data: null, ts: 0 }
 const UPCOMING_TTL = 15 * 60 * 1000
 const LIVE_TTL = 60 * 1000
-const HOCKEY_TTL = 2 * 60 * 60 * 1000   // 2 hours — saves RapidAPI quota
-const BASKETBALL_TTL = 2 * 60 * 60 * 1000
+const HOCKEY_TTL = 6 * 60 * 60 * 1000   // 6 hours — saves RapidAPI quota (100 req/day BASIC)
+const BASKETBALL_TTL = 6 * 60 * 60 * 1000
 
 function sstatsGet(path, params = {}) {
   return new Promise((resolve, reject) => {
@@ -308,8 +308,10 @@ router.get('/hockey', async (req, res) => {
   let nhlCount = 0
 
   // 1. NHL Official Free API (no key needed, always available)
+  // Use explicit date — /v1/schedule/now returns 307 redirect which Node doesn't follow
   try {
-    const nhlData = await httpsGetJson('api-web.nhle.com', '/v1/schedule/now')
+    const todayDate = new Date().toISOString().slice(0, 10)
+    const nhlData = await httpsGetJson('api-web.nhle.com', `/v1/schedule/${todayDate}`)
     const gameWeek = nhlData.gameWeek || []
     for (const day of gameWeek) {
       for (const game of (day.games || [])) {
