@@ -624,10 +624,12 @@ router.get('/esports', async (req, res) => {
       pandascoreGet('/matches/running', {
         'page[size]': 30,
         sort: 'begin_at',
+        with_odds: true,
       }),
       pandascoreGet('/matches/upcoming', {
         'page[size]': 100,
         sort: 'begin_at',
+        with_odds: true,
       }),
     ])
 
@@ -635,29 +637,7 @@ router.get('/esports', async (req, res) => {
     const upcoming = (upcomingRes.status === 'fulfilled' && Array.isArray(upcomingRes.value)) ? upcomingRes.value : []
     console.log(`[matches/esports] PandaScore: ${running.length} running + ${upcoming.length} upcoming`)
 
-    // Fetch odds for upcoming matches (paginated, same page size)
-    // PandaScore odds endpoint: /matches/{id}/odds  — but free tier may not have it.
-    // Try batch odds endpoint instead: included in match detail when available.
-    // We rely on winner_odds embedded in match objects (returned by some plan levels).
-    // Separate odds fetch attempt for the first 20 upcoming matches:
-    const upcomingIds = upcoming.slice(0, 20).map(m => m.id).join(',')
-    if (upcomingIds) {
-      try {
-        const oddsData = await pandascoreGet('/matches/upcoming', {
-          'filter[id]': upcomingIds,
-          'page[size]': 20,
-          with_odds: true,
-        })
-        if (Array.isArray(oddsData)) {
-          for (const om of oddsData) {
-            const idx = upcoming.findIndex(m => m.id === om.id)
-            if (idx >= 0 && (om.winner_odds || om.odds)) {
-              upcoming[idx] = { ...upcoming[idx], winner_odds: om.winner_odds, odds: om.odds }
-            }
-          }
-        }
-      } catch { /* odds are optional */ }
-    }
+    // winner_odds is requested inline via with_odds=true parameter above
 
     for (const m of [...running, ...upcoming]) {
       const normalized = normalizeEsportsMatch(m)
@@ -686,11 +666,11 @@ router.get('/esports', async (req, res) => {
   res.json({ data: games })
 })
 
-// GET /matches/esports-debug — test PandaScore connection
+// GET /matches/esports-debug — test PandaScore connection + inspect odds fields
 router.get('/esports-debug', async (req, res) => {
   if (!process.env.PANDASCORE_TOKEN) return res.json({ error: 'PANDASCORE_TOKEN not set' })
   try {
-    const data = await pandascoreGet('/matches/upcoming', { 'page[size]': 3, sort: 'begin_at' })
+    const data = await pandascoreGet('/matches/upcoming', { 'page[size]': 3, sort: 'begin_at', with_odds: true })
     const matches = Array.isArray(data) ? data : []
     res.json({
       ok: true,
@@ -698,11 +678,14 @@ router.get('/esports-debug', async (req, res) => {
       sample: matches.slice(0, 2).map(m => ({
         id: m.id,
         name: m.name,
-        status: m.status,
-        scheduled_at: m.scheduled_at,
         game: m.videogame?.slug,
         opp1: m.opponents?.[0]?.opponent?.name,
         opp2: m.opponents?.[1]?.opponent?.name,
+        // Inspect all odds-related fields
+        winner_odds: m.winner_odds,
+        odds: m.odds,
+        draw: m.draw,
+        allKeys: Object.keys(m),
       }))
     })
   } catch (e) {
