@@ -649,16 +649,23 @@ router.get('/esports', async (req, res) => {
   res.json({ data: games })
 })
 
-// GET /matches/esports-debug — shows raw API response (no cache, for debugging)
+// GET /matches/esports-debug — test AllSportsApi esports paths
 router.get('/esports-debug', async (req, res) => {
   if (!process.env.RAPIDAPI_KEY) return res.json({ error: 'No RAPIDAPI_KEY' })
-  const game = req.query.game || 'csgo'
-  const endpoint = req.query.endpoint || '/matches/upcoming'
+  const path = req.query.path || `/api/esports/matches/${toAllSportsDate(new Date().toISOString().slice(0,10))}`
   try {
-    const data = await esportsGetPath(endpoint, { game, per_page: 5, page: 1 })
-    res.json({ endpoint, game, raw: data })
+    const data = await allSportsGetPath(path)
+    const events = data?.events || data?.results || data?.matches || data?.data || null
+    res.json({
+      path,
+      statusCode: 200,
+      keys: Object.keys(data || {}),
+      eventsCount: Array.isArray(events) ? events.length : 'not array',
+      firstEvent: Array.isArray(events) ? events[0] : null,
+      rawPreview: JSON.stringify(data).slice(0, 500),
+    })
   } catch (e) {
-    res.json({ endpoint, game, error: e.message })
+    res.json({ path, error: e.message })
   }
 })
 
