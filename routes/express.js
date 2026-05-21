@@ -98,6 +98,169 @@ function openAIRequest(messages) {
   })
 }
 
+// ── NHL team abbrev → Russian name ───────────────────────────────────────────
+const NHL_TEAMS_RU = {
+  'ANA':'Анахайм Дакс','BOS':'Бостон Брюинс','BUF':'Баффало Сэйбрс',
+  'CGY':'Калгари Флэймс','CAR':'Каролина Харрикейнс','CHI':'Чикаго Блэкхокс',
+  'COL':'Колорадо Эвэланш','CBJ':'Коламбус Блю Джекетс','DAL':'Даллас Старс',
+  'DET':'Детройт Ред Уингс','EDM':'Эдмонтон Ойлерс','FLA':'Флорида Пантерс',
+  'LAK':'Лос-Анджелес Кингс','MIN':'Миннесота Уайлд','MTL':'Монреаль Канадьенс',
+  'NSH':'Нэшвилл Предаторс','NJD':'Нью-Джерси Девилс','NYI':'Нью-Йорк Айлендерс',
+  'NYR':'Нью-Йорк Рейнджерс','OTT':'Оттава Сенаторс','PHI':'Филадельфия Флайерс',
+  'PIT':'Питтсбург Пингвинс','SJS':'Сан-Хосе Шаркс','SEA':'Сиэтл Кракен',
+  'STL':'Сент-Луис Блюз','TBL':'Тампа-Бэй Лайтнинг','TOR':'Торонто Мэйпл Лифс',
+  'VAN':'Ванкувер Кэнакс','VGK':'Вегас Голден Найтс','WSH':'Вашингтон Кэпиталс',
+  'WPG':'Виннипег Джетс','UTH':'Юта Хоккей Клаб',
+}
+
+// Fetch NHL games for a specific date via free NHL API
+async function fetchHockeyMatchesForExpress(targetDate) {
+  try {
+    const data = await httpsGet(`https://api-web.nhle.com/v1/schedule/${targetDate}`)
+    const matches = []
+    for (const day of (data.gameWeek || [])) {
+      for (const game of (day.games || [])) {
+        const state = game.gameState
+        if (state === 'OFF' || state === 'FINAL') continue
+        const ha = game.homeTeam?.abbrev || ''
+        const aa = game.awayTeam?.abbrev || ''
+        const home = NHL_TEAMS_RU[ha] || `${game.homeTeam?.placeName?.default || ''} ${game.homeTeam?.commonName?.default || ''}`.trim()
+        const away = NHL_TEAMS_RU[aa] || `${game.awayTeam?.placeName?.default || ''} ${game.awayTeam?.commonName?.default || ''}`.trim()
+        if (home && away) matches.push({ home, away, league: 'НХЛ · Плей-офф' })
+      }
+    }
+    return matches
+  } catch { return [] }
+}
+
+// PandaScore helper for express (no caching needed — called once per generation)
+function pandascoreGetExpress(path, params = {}) {
+  const token = process.env.PANDASCORE_TOKEN
+  if (!token) return Promise.reject(new Error('No PANDASCORE_TOKEN'))
+  const qs = new URLSearchParams(params).toString()
+  const fullPath = qs ? `${path}?${qs}` : path
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.pandascore.co',
+      path: fullPath, method: 'GET', timeout: 10000,
+      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)) } catch { reject(new Error('parse error')) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    req.end()
+  })
+}
+
+const PS_GAME_SLUGS_EX = { cs2: 'cs-go', dota2: 'dota-2', valorant: 'valorant', lol: 'league-of-legends' }
+
+async function fetchEsportsMatchesForExpress(game) {
+  try {
+    const slug = PS_GAME_SLUGS_EX[game] || game
+    const data = await pandascoreGetExpress('/matches/upcoming', {
+      'filter[videogame_slug]': slug,
+      'page[size]': 10,
+      'sort': 'begin_at',
+    })
+    if (!Array.isArray(data)) return []
+    return data.slice(0, 6).map(m => {
+      const opp1 = m.opponents?.[0]?.opponent
+      const opp2 = m.opponents?.[1]?.opponent
+      if (!opp1?.name || !opp2?.name) return null
+      return {
+        home: opp1.name,
+        away: opp2.name,
+        league: m.serie?.full_name || m.tournament?.name || m.league?.name || game.toUpperCase(),
+      }
+    }).filter(Boolean)
+  } catch { return [] }
+}
+
+// Parse and validate GPT JSON response into express data
+function parseExpressJson(content, date) {
+  const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) throw new Error('Invalid JSON from OpenAI')
+  let data
+  try { data = JSON.parse(jsonMatch[0]) } catch { throw new Error('JSON parse failed') }
+  if (!data.picks || data.picks.length < 1) throw new Error('Not enough picks')
+  data.date = data.date || date
+  data.total_odds = Math.round(data.picks.reduce((acc, p) => acc * (parseFloat(p.odds) || 1), 1) * 100) / 100
+  return data
+}
+
+function buildSportExpressPrompt(sport, type, matches, date) {
+  const isHigh = type === 'high'
+  const sportLabel = { hockey: 'хоккей (НХЛ)', cs2: 'CS2', dota2: 'Dota 2', valorant: 'Valorant', lol: 'League of Legends' }[sport] || sport
+  const oddsReq = isHigh
+    ? `- Итоговый коэф ≥ 4.00, 3-4 события, смелые исходы (победа фаворита с форой, тоталы)
+- Каждый коэф от 1.40, вероятность прохода >50%`
+    : `- Итоговый коэф 2.00–4.00, 2-3 надёжных события
+- Каждый коэф 1.30–2.20, вероятность прохода >65%`
+
+  const matchBlocks = matches.map((m, i) => `${i + 1}. ${m.home} — ${m.away} (${m.league})`).join('\n')
+
+  return `Ты эксперт по ставкам на ${sportLabel}. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс на ${date}.
+
+МАТЧИ:
+${matchBlocks}
+
+Требования:
+${oddsReq}
+- Выбирай ТОЛЬКО из матчей выше
+- Коэффициенты оцени на основе силы команд (реалистично, как у топ-букмекеров)
+- Все текстовые поля СТРОГО на русском языке
+- "prediction" — конкретная ставка (Победа хозяев, ТБ 2.5, Фора (-1.5) и т.д.)
+
+Ответь ТОЛЬКО валидным JSON:
+{
+  "date": "${date}",
+  "picks": [
+    {
+      "home": "...", "away": "...", "league": "...",
+      "prediction": "Ставка на русском",
+      "odds": 1.55,
+      "reasoning": "Обоснование 2-3 предложения на русском"
+    }
+  ],
+  "total_odds": 3.47,
+  "summary": "Краткое описание экспресса на русском"
+}`
+}
+
+// Main sport-specific express generator
+async function generateSportExpress(sport, type, targetDate) {
+  let matches = []
+
+  if (sport === 'hockey') {
+    // Try targetDate, then next 3 days
+    for (let i = 0; i <= 3; i++) {
+      const d = new Date(targetDate); d.setDate(d.getDate() + i)
+      const dateStr = d.toISOString().slice(0, 10)
+      matches = await fetchHockeyMatchesForExpress(dateStr)
+      if (matches.length >= 2) { targetDate = dateStr; break }
+    }
+    if (matches.length < 2) throw new Error('Нет хоккейных матчей в ближайшие дни')
+  } else {
+    // Esports — upcoming matches
+    matches = await fetchEsportsMatchesForExpress(sport)
+    if (matches.length < 2) throw new Error(`Нет матчей по ${sport} на PandaScore`)
+  }
+
+  const prompt = buildSportExpressPrompt(sport, type, matches.slice(0, 6), targetDate)
+  const content = await openAIRequest([
+    { role: 'system', content: `Ты эксперт по ставкам на спорт. Отвечай только валидным JSON на русском языке.` },
+    { role: 'user', content: prompt },
+  ])
+  return parseExpressJson(content, targetDate)
+}
+
 async function fetchRealMatches(targetDate) {
   const key = process.env.SSTATS_API_KEY
   if (!key) return { matches: [], date: targetDate }
@@ -251,6 +414,8 @@ ${ODDS_TRANSLATION}
 
 // ── GET /express/today ────────────────────────────────────────────────────────
 router.get('/today', async (req, res) => {
+  const sport = req.query.sport || 'football'
+
   try {
     const token = req.headers.authorization?.split(' ')[1]
     let userId = null
@@ -264,45 +429,78 @@ router.get('/today', async (req, res) => {
 
     const expressDate = getTomorrowDate()
 
-    const getOrGenerate = async (table, purchaseTable) => {
-      const type = table === 'daily_express' ? 'standard' : 'high'
-      let row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
+    // ── Football: existing legacy tables ─────────────────────────────────────
+    if (sport === 'football') {
+      const getOrGenerate = async (table, purchaseTable) => {
+        const type = table === 'daily_express' ? 'standard' : 'high'
+        let row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
+        if (!row) {
+          await withMutex(`${table}_${expressDate}`, async () => {
+            const existing = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
+            if (existing) { row = existing; return }
+            try {
+              const data = await generateExpress(expressDate, type)
+              db.prepare(`INSERT OR IGNORE INTO ${table} (date, data) VALUES (?, ?)`).run(expressDate, JSON.stringify(data))
+              row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
+            } catch { return null }
+          })
+          if (!row) row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
+        }
+        let expressData
+        try { expressData = JSON.parse(row.data) } catch { return null }
+        const purchased = userId
+          ? !!db.prepare(`SELECT 1 FROM ${purchaseTable} WHERE user_id = ? AND express_date = ?`).get(userId, expressDate)
+          : false
+        if (purchased) return { date: expressDate, purchased: true, ...expressData }
+        return {
+          date: expressDate, purchased: false,
+          summary: expressData.summary, total_odds: expressData.total_odds,
+          picks_count: expressData.picks.length,
+          picks: expressData.picks.map(p => ({ home: p.home, away: p.away, league: p.league, prediction: null, odds: null })),
+        }
+      }
+      const standard = await getOrGenerate('daily_express', 'express_purchases')
+      await new Promise(r => setTimeout(r, 3000))
+      const high = await getOrGenerate('daily_express_high', 'express_purchases_high')
+      return res.json({ standard, high })
+    }
+
+    // ── Other sports: express_sports table ───────────────────────────────────
+    const getOrGenerateSport = async (type) => {
+      let row = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(expressDate, sport, type)
       if (!row) {
-        await withMutex(`${table}_${expressDate}`, async () => {
-          // Проверяем снова после получения мьютекса
-          const existing = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
+        await withMutex(`sport_${sport}_${type}_${expressDate}`, async () => {
+          const existing = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(expressDate, sport, type)
           if (existing) { row = existing; return }
           try {
-            const data = await generateExpress(expressDate, type)
-            db.prepare(`INSERT OR IGNORE INTO ${table} (date, data) VALUES (?, ?)`).run(expressDate, JSON.stringify(data))
-            row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
-          } catch { return null }
+            const data = await generateSportExpress(sport, type, expressDate)
+            db.prepare('INSERT OR IGNORE INTO express_sports (date, sport, type, data) VALUES (?, ?, ?, ?)').run(expressDate, sport, type, JSON.stringify(data))
+            row = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(expressDate, sport, type)
+          } catch (e) { console.error(`[express] ${sport}/${type}:`, e.message) }
         })
-        // Если мьютекс вернул null — другой запрос уже сохранил
-        if (!row) row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
+        if (!row) row = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(expressDate, sport, type)
       }
+      if (!row) return null
       let expressData
       try { expressData = JSON.parse(row.data) } catch { return null }
       const purchased = userId
-        ? !!db.prepare(`SELECT 1 FROM ${purchaseTable} WHERE user_id = ? AND express_date = ?`).get(userId, expressDate)
+        ? !!db.prepare('SELECT 1 FROM express_sports_purchases WHERE user_id = ? AND express_date = ? AND sport = ? AND type = ?').get(userId, expressDate, sport, type)
         : false
-
       if (purchased) return { date: expressDate, purchased: true, ...expressData }
       return {
-        date: expressDate,
-        purchased: false,
-        summary: expressData.summary,
-        total_odds: expressData.total_odds,
+        date: expressDate, purchased: false,
+        summary: expressData.summary, total_odds: expressData.total_odds,
         picks_count: expressData.picks.length,
         picks: expressData.picks.map(p => ({ home: p.home, away: p.away, league: p.league, prediction: null, odds: null })),
       }
     }
 
-    const standard = await getOrGenerate('daily_express', 'express_purchases')
-    await new Promise(r => setTimeout(r, 3000))
-    const high = await getOrGenerate('daily_express_high', 'express_purchases_high')
-
+    const [standard, high] = await Promise.all([
+      getOrGenerateSport('standard').catch(() => null),
+      getOrGenerateSport('high').catch(() => null),
+    ])
     res.json({ standard, high })
+
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -313,28 +511,48 @@ router.post('/purchase', authenticate, (req, res) => {
   const expressDate = getTomorrowDate()
   const userId = req.user.id
   const type = req.body?.type === 'high' ? 'high' : 'standard'
-  const table = type === 'standard' ? 'daily_express' : 'daily_express_high'
-  const purchaseTable = type === 'standard' ? 'express_purchases' : 'express_purchases_high'
+  const sport = req.body?.sport || 'football'
   const cost = type === 'standard' ? EXPRESS_COST_STANDARD : EXPRESS_COST_HIGH
 
-  const alreadyBought = db.prepare(`SELECT 1 FROM ${purchaseTable} WHERE user_id = ? AND express_date = ?`).get(userId, expressDate)
-  if (alreadyBought) {
+  // Football — legacy tables
+  if (sport === 'football') {
+    const table = type === 'standard' ? 'daily_express' : 'daily_express_high'
+    const purchaseTable = type === 'standard' ? 'express_purchases' : 'express_purchases_high'
+    const alreadyBought = db.prepare(`SELECT 1 FROM ${purchaseTable} WHERE user_id = ? AND express_date = ?`).get(userId, expressDate)
+    if (alreadyBought) {
+      const row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
+      if (!row) return res.status(404).json({ error: 'Экспресс не найден' })
+      return res.json({ purchased: true, ...JSON.parse(row.data) })
+    }
     const row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
+    if (!row) return res.status(404).json({ error: 'Экспресс ещё не сгенерирован' })
+    if (!req.user.is_admin) {
+      const user = db.prepare('SELECT coins FROM users WHERE id = ?').get(userId)
+      if (user.coins < cost) return res.status(402).json({ error: 'Недостаточно монет', coins: user.coins })
+      db.prepare('UPDATE users SET coins = coins - ? WHERE id = ?').run(cost, userId)
+      db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(userId, -cost, 'spend', `Экспресс (${sport}/${type})`)
+    }
+    db.prepare(`INSERT OR IGNORE INTO ${purchaseTable} (user_id, express_date) VALUES (?, ?)`).run(userId, expressDate)
+    const updated = db.prepare('SELECT coins FROM users WHERE id = ?').get(userId)
+    return res.json({ purchased: true, coins: updated.coins, ...JSON.parse(row.data) })
+  }
+
+  // Other sports — express_sports table
+  const alreadyBought = db.prepare('SELECT 1 FROM express_sports_purchases WHERE user_id = ? AND express_date = ? AND sport = ? AND type = ?').get(userId, expressDate, sport, type)
+  if (alreadyBought) {
+    const row = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(expressDate, sport, type)
     if (!row) return res.status(404).json({ error: 'Экспресс не найден' })
     return res.json({ purchased: true, ...JSON.parse(row.data) })
   }
-
-  const row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
+  const row = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(expressDate, sport, type)
   if (!row) return res.status(404).json({ error: 'Экспресс ещё не сгенерирован' })
-
   if (!req.user.is_admin) {
     const user = db.prepare('SELECT coins FROM users WHERE id = ?').get(userId)
     if (user.coins < cost) return res.status(402).json({ error: 'Недостаточно монет', coins: user.coins })
     db.prepare('UPDATE users SET coins = coins - ? WHERE id = ?').run(cost, userId)
-    db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(userId, -cost, 'spend', `Экспресс дня (${type})`)
+    db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(userId, -cost, 'spend', `Экспресс (${sport}/${type})`)
   }
-
-  db.prepare(`INSERT OR IGNORE INTO ${purchaseTable} (user_id, express_date) VALUES (?, ?)`).run(userId, expressDate)
+  db.prepare('INSERT OR IGNORE INTO express_sports_purchases (user_id, express_date, sport, type) VALUES (?, ?, ?, ?)').run(userId, expressDate, sport, type)
   const updated = db.prepare('SELECT coins FROM users WHERE id = ?').get(userId)
   res.json({ purchased: true, coins: updated.coins, ...JSON.parse(row.data) })
 })

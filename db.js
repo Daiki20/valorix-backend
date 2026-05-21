@@ -97,6 +97,28 @@ db.exec(`
   );
 `)
 
+// Sport-specific expresses (hockey, cs2, dota2, valorant, lol)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS express_sports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    sport TEXT NOT NULL,
+    type TEXT NOT NULL,
+    data TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(date, sport, type)
+  );
+  CREATE TABLE IF NOT EXISTS express_sports_purchases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    express_date TEXT NOT NULL,
+    sport TEXT NOT NULL,
+    type TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, express_date, sport, type)
+  );
+`)
+
 // Analysis cache (persists across deploys, TTL enforced in app)
 db.exec(`
   CREATE TABLE IF NOT EXISTS analysis_cache (
