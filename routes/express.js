@@ -254,49 +254,52 @@ function parseExpressJson(content, date) {
   if (!jsonMatch) throw new Error('Invalid JSON from OpenAI')
   let data
   try { data = JSON.parse(jsonMatch[0]) } catch { throw new Error('JSON parse failed') }
-  if (!data.picks || data.picks.length < 1) throw new Error('Not enough picks')
+  if (!data.picks || !Array.isArray(data.picks) || data.picks.length < 1) throw new Error('No picks in response')
   data.date = data.date || date
   data.total_odds = Math.round(data.picks.reduce((acc, p) => acc * (parseFloat(p.odds) || 1), 1) * 100) / 100
   return data
 }
 
+const ESPORTS_SPORTS = new Set(['cs2', 'dota2', 'valorant', 'lol'])
+
 function buildSportExpressPrompt(sport, type, matches, date) {
   const isHigh = type === 'high'
-  const sportLabel = { hockey: 'хоккей (НХЛ)', cs2: 'CS2', dota2: 'Dota 2', valorant: 'Valorant', lol: 'League of Legends' }[sport] || sport
+  const isEsports = ESPORTS_SPORTS.has(sport)
+  const sportLabel = { hockey: 'хоккей', cs2: 'CS2', dota2: 'Dota 2', valorant: 'Valorant', lol: 'League of Legends' }[sport] || sport
+
   const oddsReq = isHigh
-    ? `- Итоговый коэф ≥ 4.00, 3-4 события, смелые исходы (победа фаворита с форой, тоталы)
-- Каждый коэф от 1.40, вероятность прохода >50%`
-    : `- Итоговый коэф 2.00–4.00, 2-3 надёжных события
-- Каждый коэф 1.30–2.20, вероятность прохода >65%`
+    ? `- Итоговый коэф ≥ 4.00, выбери 3-4 события
+- Каждый коэф от 1.40 и выше`
+    : `- Итоговый коэф 2.00–4.00, выбери 2-3 события
+- Каждый коэф 1.30–2.20`
+
+  const oddsNote = isEsports
+    ? `ВАЖНО: реальных букмекерских коэффициентов нет — оцени их сам на основе силы команд.
+Используй знания о командах: мировой рейтинг, последние результаты, форму.
+Коэффициенты должны быть реалистичными (1.30–3.00), не выдумывай экстремальные значения.`
+    : `Коэффициенты оцени реалистично на основе силы команд, как у топ-букмекеров.`
+
+  const predNote = isEsports
+    ? `"prediction" — победитель матча (Победа ${matches[0]?.home || 'команды 1'} / Победа ${matches[0]?.away || 'команды 2'})`
+    : `"prediction" — конкретная ставка (Победа хозяев / П1 / ТБ 2.5 / Фора (-1.5))`
 
   const matchBlocks = matches.map((m, i) => `${i + 1}. ${m.home} — ${m.away} (${m.league})`).join('\n')
 
-  return `Ты эксперт по ставкам на ${sportLabel}. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс на ${date}.
+  return `Ты эксперт по ставкам на ${sportLabel}. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс.
 
 МАТЧИ:
 ${matchBlocks}
 
+${oddsNote}
+
 Требования:
 ${oddsReq}
 - Выбирай ТОЛЬКО из матчей выше
-- Коэффициенты оцени на основе силы команд (реалистично, как у топ-букмекеров)
 - Все текстовые поля СТРОГО на русском языке
-- "prediction" — конкретная ставка (Победа хозяев, ТБ 2.5, Фора (-1.5) и т.д.)
+- ${predNote}
 
-Ответь ТОЛЬКО валидным JSON:
-{
-  "date": "${date}",
-  "picks": [
-    {
-      "home": "...", "away": "...", "league": "...",
-      "prediction": "Ставка на русском",
-      "odds": 1.55,
-      "reasoning": "Обоснование 2-3 предложения на русском"
-    }
-  ],
-  "total_odds": 3.47,
-  "summary": "Краткое описание экспресса на русском"
-}`
+Ответь ТОЛЬКО валидным JSON без markdown:
+{"date":"${date}","picks":[{"home":"...","away":"...","league":"...","prediction":"Победа X","odds":1.65,"reasoning":"Обоснование на русском 2 предложения"}],"total_odds":2.72,"summary":"Описание экспресса на русском"}`
 }
 
 // Main sport-specific express generator
@@ -560,10 +563,9 @@ router.get('/today', async (req, res) => {
       }
     }
 
-    const [standard, high] = await Promise.all([
-      getOrGenerateSport('standard').catch(() => null),
-      getOrGenerateSport('high').catch(() => null),
-    ])
+    const standard = await getOrGenerateSport('standard').catch(() => null)
+    await new Promise(r => setTimeout(r, 2000)) // пауза между OpenAI запросами
+    const high = await getOrGenerateSport('high').catch(() => null)
     res.json({ standard, high })
 
   } catch (err) {
