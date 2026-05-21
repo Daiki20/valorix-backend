@@ -350,26 +350,33 @@ router.get('/hockey', async (req, res) => {
     const results = await Promise.allSettled(
       tournamentsToFetch.map(t =>
         allSportsGetPath(`/api/tournament/${t.id}/season/${t.seasonId}/matches/next/0`)
-          .then(data => ({ ...t, events: data?.events || [] }))
+          .then(data => {
+            const evts = data?.events || []
+            console.log(`[matches/hockey] T=${t.id} "${t.league}": ${evts.length} events, hasErr=${!!data?.message}`)
+            return { ...t, events: evts }
+          })
       )
     )
 
     for (const r of results) {
       if (r.status !== 'fulfilled') {
-        console.log('[matches/hockey] AllSportsApi error:', r.reason?.message)
+        console.error('[matches/hockey] AllSportsApi rejected:', r.reason?.message)
         continue
       }
-      const { league, events } = r.value
+      // NOTE: use r.value (not outer t) — t is out of scope here
+      const { id: tournamentId, seasonId, league, events } = r.value
       let added = 0
       for (const event of events) {
-        const normalized = normalizeSofascoreMatch(event, league, t.id, t.seasonId)
+        const normalized = normalizeSofascoreMatch(event, league, tournamentId, seasonId)
         if (!normalized) continue
         // Dedup with NHL free API results (same team names)
         if (games.some(g => g.home === normalized.home && g.away === normalized.away)) continue
         games.push(normalized)
         added++
       }
-      console.log(`[matches/hockey] ${league}: ${added} games`)
+      if (added > 0 || events.length > 0) {
+        console.log(`[matches/hockey] ${league}: ${added}/${events.length} added`)
+      }
     }
     console.log(`[matches/hockey] AllSportsApi total: ${games.length} games`)
   } else {
@@ -382,8 +389,13 @@ router.get('/hockey', async (req, res) => {
     return new Date(a.rawDate || 0) - new Date(b.rawDate || 0)
   })
 
-  hockeyCache = { data: games, ts: Date.now() }
-  console.log(`[matches/hockey] cached ${games.length} total games for 2 hrs`)
+  // Only cache if we actually got data — don't lock in empty results for 2 hrs
+  if (games.length > 0) {
+    hockeyCache = { data: games, ts: Date.now() }
+    console.log(`[matches/hockey] cached ${games.length} total games for 2 hrs`)
+  } else {
+    console.log('[matches/hockey] WARNING: 0 games returned — skipping cache so next request retries')
+  }
   res.json({ data: games })
 })
 
