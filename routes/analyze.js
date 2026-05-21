@@ -27,7 +27,82 @@ function cacheSet(key, val) {
 }
 
 const RAPIDAPI_HOST = 'free-api-live-football-data.p.rapidapi.com'
-const ESPORTS_HOST = 'esports-data.p.rapidapi.com'
+
+// ── PandaScore helper (replaces dead esports-data.p.rapidapi.com) ─────────────
+function pandascoreGet(path, params = {}) {
+  const token = process.env.PANDASCORE_TOKEN
+  if (!token) return Promise.reject(new Error('No PANDASCORE_TOKEN'))
+  const qs = new URLSearchParams(params).toString()
+  const fullPath = qs ? `${path}?${qs}` : path
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.pandascore.co',
+      path: fullPath,
+      method: 'GET',
+      timeout: 10000,
+      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => {
+        if (res.statusCode !== 200) { reject(new Error(`pandascore ${res.statusCode}`)); return }
+        try { resolve(JSON.parse(data)) } catch { reject(new Error('parse error')) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    req.end()
+  })
+}
+
+const PS_GAME_SLUGS = { cs2: 'cs-go', dota2: 'dota-2', valorant: 'valorant', lol: 'league-of-legends' }
+
+// Find team on PandaScore — returns team object WITH players array
+async function findPSTeam(game, teamName) {
+  const gameSlug = PS_GAME_SLUGS[game] || game
+  const data = await pandascoreGet('/teams', {
+    'search[name]': teamName,
+    'filter[videogame_slug]': gameSlug,
+    'page[size]': 5,
+  })
+  const teams = Array.isArray(data) ? data : []
+  if (!teams.length) return null
+  const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  const q = norm(teamName)
+  return teams.find(t =>
+    norm(t.name).includes(q) || q.includes(norm(t.name)) ||
+    norm(t.acronym || '').includes(q) || q.includes(norm(t.acronym || ''))
+  ) || teams[0]
+}
+
+// Fetch last N finished matches for a team
+async function fetchPSRecentMatches(teamId, count = 7) {
+  const data = await pandascoreGet('/matches/past', {
+    'filter[opponent_id]': teamId,
+    'sort': '-end_at',
+    'page[size]': count,
+  })
+  return Array.isArray(data) ? data : []
+}
+
+// Format PandaScore match results to readable string
+function formatPSMatches(matches, teamId) {
+  if (!matches.length) return null
+  return matches.slice(0, 7).map(m => {
+    const opp1 = m.opponents?.[0]?.opponent
+    const opp2 = m.opponents?.[1]?.opponent
+    const isT1  = String(opp1?.id) === String(teamId)
+    const opponent = isT1 ? opp2?.name : opp1?.name || '?'
+    const myRes  = (m.results || []).find(r => String(r.team_id) === String(teamId))
+    const oppRes = (m.results || []).find(r => String(r.team_id) !== String(teamId))
+    const myScore  = myRes?.score  ?? 0
+    const oppScore = oppRes?.score ?? 0
+    const win = myScore > oppScore
+    const tourney = m.tournament?.name || m.league?.name || ''
+    return `${win ? 'W' : 'L'} vs ${opponent} ${myScore}:${oppScore}${tourney ? ` [${tourney}]` : ''}`
+  }).join(' | ')
+}
 
 function callOpenAI(messages, max_tokens = 1500) {
   return new Promise((resolve, reject) => {
@@ -345,11 +420,10 @@ router.post('/context', authenticate, async (req, res) => {
   }
 })
 
-// Esports context — fetches real data from Esports Data API (mrcupcake)
+// Esports context — real data from PandaScore (replaces dead esports-data.p.rapidapi.com)
 router.post('/esports-context', authenticate, async (req, res) => {
-  const { game, home, away, homePlayers, awayPlayers } = req.body
+  const { game, home, away } = req.body
   if (!home || !away || !game) return res.status(400).json({ error: 'game, home and away required' })
-  if (!process.env.RAPIDAPI_KEY) return res.json({})
 
   const result = {
     homeResults: null,
@@ -360,51 +434,48 @@ router.post('/esports-context', authenticate, async (req, res) => {
     awayRank: null,
   }
 
+  if (!process.env.PANDASCORE_TOKEN) {
+    console.log('[esports-context] PANDASCORE_TOKEN not set — returning empty context')
+    return res.json(result)
+  }
+
   try {
-    // Step 1: find both teams in rankings (gives us IDs + rank) in parallel
-    const [homeTeamRes, awayTeamRes] = await Promise.allSettled([
-      findTeamInRankings(game, home),
-      findTeamInRankings(game, away),
+    // Step 1: find both teams on PandaScore in parallel (response includes players[])
+    const [homeTeam, awayTeam] = await Promise.all([
+      findPSTeam(game, home).catch(err => { console.error('[esports-context] findPSTeam home:', err.message); return null }),
+      findPSTeam(game, away).catch(err => { console.error('[esports-context] findPSTeam away:', err.message); return null }),
     ])
 
-    const homeTeam = homeTeamRes.status === 'fulfilled' ? homeTeamRes.value : null
-    const awayTeam = awayTeamRes.status === 'fulfilled' ? awayTeamRes.value : null
+    const homeId = homeTeam?.id ?? null
+    const awayId = awayTeam?.id ?? null
 
-    const homeTeamId = homeTeam?.id || homeTeam?.team_id || null
-    const awayTeamId = awayTeam?.id || awayTeam?.team_id || null
-
-    result.homeRank = homeTeam?.rank || homeTeam?.position || null
-    result.awayRank = awayTeam?.rank || awayTeam?.position || null
-
-    // Step 2: fetch recent matches + rosters in parallel
-    const [homeMatchesRes, awayMatchesRes, homeRosterRes, awayRosterRes] = await Promise.allSettled([
-      fetchTeamRecentMatches(game, home, homeTeamId),
-      fetchTeamRecentMatches(game, away, awayTeamId),
-      homeTeamId ? fetchTeamRoster(homeTeamId) : Promise.resolve([]),
-      awayTeamId ? fetchTeamRoster(awayTeamId) : Promise.resolve([]),
+    // Step 2: fetch last 7 finished matches for each team in parallel
+    const [homeMatches, awayMatches] = await Promise.all([
+      homeId ? fetchPSRecentMatches(homeId, 7).catch(() => []) : Promise.resolve([]),
+      awayId ? fetchPSRecentMatches(awayId, 7).catch(() => []) : Promise.resolve([]),
     ])
 
-    const homeMatches = homeMatchesRes.status === 'fulfilled' ? homeMatchesRes.value : []
-    const awayMatches = awayMatchesRes.status === 'fulfilled' ? awayMatchesRes.value : []
+    result.homeResults = formatPSMatches(homeMatches, homeId)
+    result.awayResults = formatPSMatches(awayMatches, awayId)
 
-    result.homeResults = formatMatches(homeMatches, home, homeTeamId)
-    result.awayResults = formatMatches(awayMatches, away, awayTeamId)
-
-    if (homeRosterRes.status === 'fulfilled') result.homeRoster = homeRosterRes.value
-    if (awayRosterRes.status === 'fulfilled') result.awayRoster = awayRosterRes.value
-
-    // Step 3: if roster still empty — search players by OCR names from screen
-    if (!result.homeRoster.length && homePlayers?.length) {
-      result.homeRoster = await searchPlayers(game, homePlayers).catch(() => [])
+    // Step 3: extract roster from team.players[] (PandaScore includes active roster)
+    if (homeTeam?.players?.length) {
+      result.homeRoster = homeTeam.players
+        .map(p => ({ name: p.name || p.first_name || null, role: p.role || null }))
+        .filter(p => p.name)
     }
-    if (!result.awayRoster.length && awayPlayers?.length) {
-      result.awayRoster = await searchPlayers(game, awayPlayers).catch(() => [])
+    if (awayTeam?.players?.length) {
+      result.awayRoster = awayTeam.players
+        .map(p => ({ name: p.name || p.first_name || null, role: p.role || null }))
+        .filter(p => p.name)
     }
 
-    console.log(`[esports-context] ${home}(#${result.homeRank}) vs ${away}(#${result.awayRank}) [${game}]: homeMatches=${homeMatches.length}, awayMatches=${awayMatches.length}, homeRoster=${result.homeRoster.length}, awayRoster=${result.awayRoster.length}`)
+    console.log(`[esports-context] ${home}(id:${homeId}) vs ${away}(id:${awayId}) [${game}]: ` +
+      `homeMatches=${homeMatches.length}, awayMatches=${awayMatches.length}, ` +
+      `homeRoster=${result.homeRoster.length}, awayRoster=${result.awayRoster.length}`)
     res.json(result)
   } catch (err) {
-    console.error('Esports context error:', err.message)
+    console.error('[esports-context] error:', err.message)
     res.json(result)
   }
 })
