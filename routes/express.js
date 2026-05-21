@@ -113,11 +113,69 @@ const NHL_TEAMS_RU = {
   'WPG':'Виннипег Джетс','UTH':'Юта Хоккей Клаб',
 }
 
+// AllSportsApi helper (same as matches.js)
+function allSportsGetPathExpress(path) {
+  const key = process.env.RAPIDAPI_KEY
+  if (!key) return Promise.reject(new Error('No RAPIDAPI_KEY'))
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'allsportsapi2.p.rapidapi.com',
+      path,
+      method: 'GET',
+      timeout: 8000,
+      headers: {
+        'X-RapidAPI-Key': key,
+        'X-RapidAPI-Host': 'allsportsapi2.p.rapidapi.com',
+        'Accept': 'application/json',
+      },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => { try { resolve(JSON.parse(data)) } catch { reject(new Error('parse error')) } })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    req.end()
+  })
+}
+
+// IIHF WC + VHL + MHL upcoming games (AllSportsApi, Sofascore format)
+const HOCKEY_EXPRESS_TOURNAMENTS = [
+  { id: 3,    seasonId: 81043, league: 'ИИХФ · Чемпионат мира' },
+  { id: 1141, seasonId: 78633, league: 'ВХЛ' },
+  { id: 1159, seasonId: 79945, league: 'МХЛ' },
+]
+
+async function fetchAllSportsHockey() {
+  if (!process.env.RAPIDAPI_KEY) return []
+  const results = await Promise.allSettled(
+    HOCKEY_EXPRESS_TOURNAMENTS.map(t =>
+      allSportsGetPathExpress(`/api/tournament/${t.id}/season/${t.seasonId}/matches/next/0`)
+        .then(data => ({ league: t.league, events: data?.events || [] }))
+    )
+  )
+  const matches = []
+  for (const r of results) {
+    if (r.status !== 'fulfilled') continue
+    for (const ev of r.value.events) {
+      const statusType = (ev.status?.type || '').toLowerCase()
+      if (statusType === 'finished') continue
+      const home = ev.homeTeam?.name || ''
+      const away = ev.awayTeam?.name || ''
+      if (home && away) matches.push({ home, away, league: r.value.league })
+    }
+  }
+  return matches
+}
+
 // Fetch NHL games for a specific date via free NHL API
 async function fetchHockeyMatchesForExpress(targetDate) {
+  const matches = []
+
+  // 1. NHL free API
   try {
     const data = await httpsGet(`https://api-web.nhle.com/v1/schedule/${targetDate}`)
-    const matches = []
     for (const day of (data.gameWeek || [])) {
       for (const game of (day.games || [])) {
         const state = game.gameState
@@ -129,8 +187,15 @@ async function fetchHockeyMatchesForExpress(targetDate) {
         if (home && away) matches.push({ home, away, league: 'НХЛ · Плей-офф' })
       }
     }
-    return matches
-  } catch { return [] }
+  } catch {}
+
+  // 2. ИИХФ ЧМ + ВХЛ + МХЛ via AllSportsApi
+  try {
+    const extraMatches = await fetchAllSportsHockey()
+    matches.push(...extraMatches)
+  } catch {}
+
+  return matches
 }
 
 // PandaScore helper for express (no caching needed — called once per generation)
