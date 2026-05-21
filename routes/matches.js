@@ -10,8 +10,8 @@ let hockeyCache = { data: null, ts: 0 }
 let basketballCache = { data: null, ts: 0 }
 const UPCOMING_TTL = 15 * 60 * 1000
 const LIVE_TTL = 60 * 1000
-const HOCKEY_TTL = 15 * 60 * 1000
-const BASKETBALL_TTL = 15 * 60 * 1000
+const HOCKEY_TTL = 2 * 60 * 60 * 1000   // 2 hours — saves RapidAPI quota
+const BASKETBALL_TTL = 2 * 60 * 60 * 1000
 
 function sstatsGet(path, params = {}) {
   return new Promise((resolve, reject) => {
@@ -94,13 +94,15 @@ router.get('/live', async (req, res) => {
   }
 })
 
-// ── AllSportsApi helper ───────────────────────────────────────────────────────
-function allSportsGet(sport, endpoint) {
+// ── AllSportsApi helper (direct path) ────────────────────────────────────────
+// Uses Sofascore-mirrored tournament endpoints. Format:
+//   /api/tournament/{id}/season/{sid}/matches/next/0
+function allSportsGetPath(path) {
   const key = process.env.RAPIDAPI_KEY
   return new Promise((resolve, reject) => {
     const options = {
       hostname: 'allsportsapi2.p.rapidapi.com',
-      path: `/api/${sport}/${endpoint}`,
+      path,
       method: 'GET',
       timeout: 8000,
       headers: {
@@ -122,6 +124,22 @@ function allSportsGet(sport, endpoint) {
     req.end()
   })
 }
+
+// Keep legacy helper for basketball (uses old endpoint format)
+function allSportsGet(sport, endpoint) {
+  return allSportsGetPath(`/api/${sport}/${endpoint}`)
+}
+
+// ── Hockey tournament config ──────────────────────────────────────────────────
+// IDs match Sofascore / AllSportsApi.  Season IDs valid for 2025-26 season.
+// Update seasonId each September when the new season starts.
+const HOCKEY_TOURNAMENTS = [
+  { id: 3,    seasonId: 81043, league: 'IIHF · Чемпионат мира' },
+  { id: 234,  seasonId: 78476, league: 'НХЛ' },
+  { id: 268,  seasonId: 77998, league: 'КХЛ' },
+  { id: 1159, seasonId: 79945, league: 'МХЛ' },
+  { id: 1141, seasonId: 78633, league: 'ВХЛ' },
+]
 
 // ── NHL free API helper ───────────────────────────────────────────────────────
 function httpsGetJson(hostname, path) {
@@ -219,6 +237,40 @@ function normalizeAllSportsMatch(m, sport, leagueName) {
   }
 }
 
+// Normalize Sofascore-style event (returned by /matches/next endpoint)
+function normalizeSofascoreMatch(event, leagueName) {
+  const home = event.homeTeam?.name || ''
+  const away = event.awayTeam?.name || ''
+  if (!home || !away) return null
+
+  const ts = event.startTimestamp
+  const rawDate = ts ? new Date(ts * 1000).toISOString() : null
+
+  const statusType = (event.status?.type || '').toLowerCase()
+  const isFinished = statusType === 'finished'
+  if (isFinished) return null
+
+  const isLive = statusType === 'inprogress'
+  let score = null
+  if (isLive) {
+    const hs = event.homeScore?.current ?? event.homeScore?.normaltime ?? 0
+    const as_ = event.awayScore?.current ?? event.awayScore?.normaltime ?? 0
+    score = `${hs}:${as_}`
+  }
+
+  return {
+    id: `as_${event.id || Math.random()}`,
+    home: translateKHL(home),
+    away: translateKHL(away),
+    league: leagueName,
+    sport: 'hockey',
+    date: rawDate ? formatHockeyDate(rawDate) : '',
+    rawDate: rawDate || new Date().toISOString(),
+    isLive,
+    score,
+  }
+}
+
 // Leagues to show (filter by name from AllSportsApi response)
 const HOCKEY_LEAGUE_FILTER = [
   'khl', 'кхл', 'kontinental',
@@ -247,6 +299,7 @@ router.get('/hockey', async (req, res) => {
   }
 
   const games = []
+  let nhlCount = 0
 
   // 1. NHL Official Free API (no key needed, always available)
   try {
@@ -273,45 +326,48 @@ router.get('/hockey', async (req, res) => {
           isLive,
           score: isLive ? `${game.homeTeam?.score ?? 0}:${game.awayTeam?.score ?? 0}` : null,
         })
+        nhlCount++
       }
     }
-    console.log(`[matches/hockey] NHL: ${games.length} games`)
+    console.log(`[matches/hockey] NHL free API: ${nhlCount} games`)
   } catch (err) {
     console.error('[matches/hockey] NHL error:', err.message)
   }
 
-  // 2. AllSportsApi — ALL hockey matches by date (no league ID filter)
+  // 2. AllSportsApi — tournament-based matches (KHL, IIHF, MHL, VHL, NHL backup)
   if (process.env.RAPIDAPI_KEY) {
-    const today = new Date().toISOString().slice(0, 10)
-    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10)
-    const todayAS = toAllSportsDate(today)
-    const tomorrowAS = toAllSportsDate(tomorrow)
+    // Skip NHL from AllSportsApi if free NHL API already returned games (avoid duplicates)
+    const tournamentsToFetch = nhlCount > 0
+      ? HOCKEY_TOURNAMENTS.filter(t => t.id !== 234)
+      : HOCKEY_TOURNAMENTS
 
-    const [todayRes, tomorrowRes] = await Promise.allSettled([
-      allSportsGet('hockey', `matches/${todayAS}`),
-      allSportsGet('hockey', `matches/${tomorrowAS}`),
-    ])
+    const results = await Promise.allSettled(
+      tournamentsToFetch.map(t =>
+        allSportsGetPath(`/api/tournament/${t.id}/season/${t.seasonId}/matches/next/0`)
+          .then(data => ({ ...t, events: data?.events || [] }))
+      )
+    )
 
-    for (const r of [todayRes, tomorrowRes]) {
+    for (const r of results) {
       if (r.status !== 'fulfilled') {
         console.log('[matches/hockey] AllSportsApi error:', r.reason?.message)
         continue
       }
-      console.log('[matches/hockey] AllSportsApi raw keys:', Object.keys(r.value || {}))
-      const matches = r.value?.result || r.value?.data || r.value?.events || r.value?.matches || []
-      for (const m of (Array.isArray(matches) ? matches : [])) {
-        // Filter: only important leagues
-        const leagueName = m.league_name || m.event_competition || ''
-        if (!isImportantHockeyLeague(leagueName)) continue
-        const normalized = normalizeAllSportsMatch(m, 'hockey', leagueName)
-        if (normalized && !games.find(g => g.home === normalized.home && g.away === normalized.away)) {
-          games.push(normalized)
-        }
+      const { league, events } = r.value
+      let added = 0
+      for (const event of events) {
+        const normalized = normalizeSofascoreMatch(event, league)
+        if (!normalized) continue
+        // Dedup with NHL free API results (same team names)
+        if (games.some(g => g.home === normalized.home && g.away === normalized.away)) continue
+        games.push(normalized)
+        added++
       }
+      console.log(`[matches/hockey] ${league}: ${added} games`)
     }
-    console.log(`[matches/hockey] after AllSportsApi: ${games.length} total`)
+    console.log(`[matches/hockey] AllSportsApi total: ${games.length} games`)
   } else {
-    console.log('[matches/hockey] RAPIDAPI_KEY not set — only NHL available')
+    console.log('[matches/hockey] RAPIDAPI_KEY not set — only NHL free API available')
   }
 
   games.sort((a, b) => {
@@ -321,7 +377,7 @@ router.get('/hockey', async (req, res) => {
   })
 
   hockeyCache = { data: games, ts: Date.now() }
-  console.log(`[matches/hockey] cached ${games.length} games for 15 min`)
+  console.log(`[matches/hockey] cached ${games.length} total games for 2 hrs`)
   res.json({ data: games })
 })
 
