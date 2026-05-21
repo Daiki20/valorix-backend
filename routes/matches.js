@@ -207,8 +207,32 @@ router.get('/hockey', async (req, res) => {
     console.error('[matches/hockey] NHL error:', err.message)
   }
 
-  // 2. КХЛ — пока только если будут точные ID лиг от провайдера
-  // (sstats.net не документирует хоккейные лиги — добавим когда получим реальные ID)
+  // 2. КХЛ — unofficial khl.ru API (no key needed)
+  try {
+    const today = new Date().toISOString().slice(0, 10)
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10)
+    const khlData = await httpsGetJson('www.khl.ru',
+      `/api/v2.0/event.json?with[]=venue&with[]=team&filter[date_from]=${today}&filter[date_to]=${tomorrow}&filter[game_state_id]=1`
+    )
+    const khlGames = khlData?.data || khlData?.events || khlData?.games || []
+    for (const g of khlGames) {
+      const home = g.team_a?.name || g.home?.name || g.homeTeam?.name || ''
+      const away = g.team_b?.name || g.away?.name || g.awayTeam?.name || ''
+      if (!home || !away) continue
+      games.push({
+        id: `khl_${g.id || Math.random()}`,
+        home: translateKHL(home),
+        away: translateKHL(away),
+        league: g.stage?.league?.name || 'КХЛ',
+        sport: 'hockey',
+        date: formatHockeyDate(g.start_at || g.date || g.startTime),
+        rawDate: g.start_at || g.date || g.startTime || today,
+      })
+    }
+    console.log(`[matches/hockey] KHL: ${khlGames.length} games from khl.ru`)
+  } catch (err) {
+    console.log(`[matches/hockey] khl.ru not available: ${err.message}`)
+  }
 
   // Sort: live first, then by date
   games.sort((a, b) => {
