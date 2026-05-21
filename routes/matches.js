@@ -238,7 +238,8 @@ function normalizeAllSportsMatch(m, sport, leagueName) {
 }
 
 // Normalize Sofascore-style event (returned by /matches/next endpoint)
-function normalizeSofascoreMatch(event, leagueName) {
+// tournamentId/seasonId passed through so frontend can fetch stats
+function normalizeSofascoreMatch(event, leagueName, tournamentId, seasonId) {
   const home = event.homeTeam?.name || ''
   const away = event.awayTeam?.name || ''
   if (!home || !away) return null
@@ -260,6 +261,11 @@ function normalizeSofascoreMatch(event, leagueName) {
 
   return {
     id: `as_${event.id || Math.random()}`,
+    eventId: event.id,
+    homeTeamId: event.homeTeam?.id,
+    awayTeamId: event.awayTeam?.id,
+    tournamentId,
+    seasonId,
     home: translateKHL(home),
     away: translateKHL(away),
     league: leagueName,
@@ -356,7 +362,7 @@ router.get('/hockey', async (req, res) => {
       const { league, events } = r.value
       let added = 0
       for (const event of events) {
-        const normalized = normalizeSofascoreMatch(event, league)
+        const normalized = normalizeSofascoreMatch(event, league, t.id, t.seasonId)
         if (!normalized) continue
         // Dedup with NHL free API results (same team names)
         if (games.some(g => g.home === normalized.home && g.away === normalized.away)) continue
@@ -379,6 +385,46 @@ router.get('/hockey', async (req, res) => {
   hockeyCache = { data: games, ts: Date.now() }
   console.log(`[matches/hockey] cached ${games.length} total games for 2 hrs`)
   res.json({ data: games })
+})
+
+// ── GET /matches/hockey-stats ─────────────────────────────────────────────────
+// Returns real form + standings for a hockey match (called at analysis time)
+const hockeyStatsCache = new Map()   // key: `${homeId}_${awayId}` → { data, ts }
+const HOCKEY_STATS_TTL = 10 * 60 * 1000  // 10 min
+
+router.get('/hockey-stats', async (req, res) => {
+  const { homeId, awayId, tournamentId, seasonId } = req.query
+  if (!homeId || !awayId) return res.status(400).json({ error: 'homeId and awayId required' })
+  if (!process.env.RAPIDAPI_KEY) return res.json({ homeForm: [], awayForm: [], standings: [] })
+
+  const cacheKey = `${homeId}_${awayId}_${tournamentId}`
+  const cached = hockeyStatsCache.get(cacheKey)
+  if (cached && Date.now() - cached.ts < HOCKEY_STATS_TTL) {
+    return res.json(cached.data)
+  }
+
+  const fetches = [
+    allSportsGetPath(`/api/team/${homeId}/matches/previous/0`).catch(() => null),
+    allSportsGetPath(`/api/team/${awayId}/matches/previous/0`).catch(() => null),
+  ]
+  if (tournamentId && seasonId) {
+    fetches.push(
+      allSportsGetPath(`/api/tournament/${tournamentId}/season/${seasonId}/standings/total`).catch(() => null)
+    )
+  }
+
+  const [homeRes, awayRes, standingsRes] = await Promise.all(fetches)
+
+  const data = {
+    homeForm: homeRes?.events || [],
+    awayForm: awayRes?.events || [],
+    standings: standingsRes?.standings || [],
+  }
+
+  hockeyStatsCache.set(cacheKey, { data, ts: Date.now() })
+  console.log(`[matches/hockey-stats] home=${homeId} away=${awayId}: ` +
+    `${data.homeForm.length}/${data.awayForm.length} form events, ${data.standings.length} standing groups`)
+  res.json(data)
 })
 
 // ── GET /matches/basketball ───────────────────────────────────────────────────
