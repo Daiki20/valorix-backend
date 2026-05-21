@@ -8,7 +8,7 @@ const router = express.Router()
 const EXPRESS_COST_STANDARD = 39
 const EXPRESS_COST_HIGH = 49
 
-// Топовые лиги — гарантированно есть на крупных БК
+// Только топ-лиги которые точно есть на BetBoom/Fonbet/Winline
 const ALL_LEAGUE_IDS = [
   2,   // Champions League
   3,   // Europa League
@@ -16,20 +16,11 @@ const ALL_LEAGUE_IDS = [
   39,  // Premier League
   140, // La Liga
   135, // Serie A
-  78,  // Bundesliga
+  78,  // Bundesliga 1
   61,  // Ligue 1
   235, // Russian Premier League
   94,  // Primeira Liga (Portugal)
   88,  // Eredivisie
-  144, // Belgian Pro League
-  79,  // Bundesliga 2
-  62,  // Ligue 2
-  40,  // Championship (England)
-  71,  // Brazilian Serie A
-  98,  // J-League
-  253, // MLS
-  480, // Copa Libertadores
-  13,  // FIFA World Cup
 ]
 
 // Mutex — предотвращает параллельные генерации одного экспресса
