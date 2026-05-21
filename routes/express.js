@@ -100,29 +100,12 @@ async function fetchRealMatches(targetDate) {
 
   const allGames = results.flatMap(r => Array.isArray(r.data) ? r.data : [])
 
-  // Ищем матчи на targetDate и +1 день — берём тот где больше матчей
-  const candidates = [0, 1].map(offset => {
-    const d = new Date(targetDate)
-    d.setDate(d.getDate() + offset)
-    return d.toISOString().slice(0, 10)
-  })
+  const matches = allGames
+    .filter(g => g.date && g.homeTeam?.name && g.awayTeam?.name && g.date.slice(0, 10) === targetDate)
+    .map(g => ({ id: g.id, home: translateTeam(g.homeTeam.name), away: translateTeam(g.awayTeam.name), league: g.season?.league?.name || 'Unknown' }))
 
-  let bestDate = targetDate
-  let bestMatches = []
-
-  for (const date of candidates) {
-    const matches = allGames
-      .filter(g => g.date && g.homeTeam?.name && g.awayTeam?.name && g.date.slice(0, 10) === date)
-      .map(g => ({ id: g.id, home: translateTeam(g.homeTeam.name), away: translateTeam(g.awayTeam.name), league: g.season?.league?.name || 'Unknown' }))
-    if (matches.length > bestMatches.length) {
-      bestMatches = matches
-      bestDate = date
-    }
-    if (bestMatches.length >= 6) break
-  }
-
-  console.log(`[express] fetchRealMatches: target=${targetDate}, best=${bestDate}, found=${bestMatches.length} matches`)
-  return { matches: bestMatches, date: bestDate }
+  console.log(`[express] fetchRealMatches: date=${targetDate}, found=${matches.length} matches`)
+  return { matches, date: targetDate }
 }
 
 // Только ключевые рынки чтобы не раздувать промпт
