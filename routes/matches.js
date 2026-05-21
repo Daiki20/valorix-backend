@@ -563,7 +563,6 @@ function normalizeEsportsMatch(m) {
   if (!PS_TARGET_GAMES.has(gameFrontend)) return null
 
   const gameDisplay = ESPORTS_GAME_DISPLAY[gameFrontend] || gameFrontend.toUpperCase()
-  // Tournament name: prefer serie full_name, fall back to tournament/league name
   const tournamentName = m.serie?.full_name || m.tournament?.name || m.league?.name || ''
 
   const isLive = m.status === 'running'
@@ -572,10 +571,28 @@ function normalizeEsportsMatch(m) {
     score = `${m.results[0]?.score ?? 0}:${m.results[1]?.score ?? 0}`
   }
 
+  // Team logos from PandaScore CDN
+  const homeImg = opp1?.image_url || null
+  const awayImg = opp2?.image_url || null
+
+  // Odds — PandaScore returns winner odds in some match objects
+  // Format: m.winner_odds = [{winner: {name}, value: 1.45}, ...]
+  let odds1x2 = null
+  const wonOdds = m.winner_odds || m.odds || null
+  if (Array.isArray(wonOdds) && wonOdds.length >= 2) {
+    const o1 = wonOdds.find(o => o.winner?.name === team1 || o.team?.name === team1)
+    const o2 = wonOdds.find(o => o.winner?.name === team2 || o.team?.name === team2)
+    if (o1?.value && o2?.value) {
+      odds1x2 = { home: o1.value, away: o2.value, draw: null }
+    }
+  }
+
   return {
     id: `ps_${m.id}`,
     home: team1,
     away: team2,
+    homeImg,
+    awayImg,
     league: tournamentName ? `${gameDisplay} · ${tournamentName}` : gameDisplay,
     game: gameFrontend,
     sport: 'esports',
@@ -583,7 +600,7 @@ function normalizeEsportsMatch(m) {
     rawDate: m.scheduled_at || new Date().toISOString(),
     isLive,
     score,
-    odds1x2: null,
+    odds1x2,
   }
 }
 
@@ -602,6 +619,7 @@ router.get('/esports', async (req, res) => {
 
   try {
     // Fetch running (live) + upcoming matches in parallel
+    // Also fetch odds in parallel with the match lists
     const [runningRes, upcomingRes] = await Promise.allSettled([
       pandascoreGet('/matches/running', {
         'page[size]': 30,
@@ -616,6 +634,30 @@ router.get('/esports', async (req, res) => {
     const running  = (runningRes.status  === 'fulfilled' && Array.isArray(runningRes.value))  ? runningRes.value  : []
     const upcoming = (upcomingRes.status === 'fulfilled' && Array.isArray(upcomingRes.value)) ? upcomingRes.value : []
     console.log(`[matches/esports] PandaScore: ${running.length} running + ${upcoming.length} upcoming`)
+
+    // Fetch odds for upcoming matches (paginated, same page size)
+    // PandaScore odds endpoint: /matches/{id}/odds  — but free tier may not have it.
+    // Try batch odds endpoint instead: included in match detail when available.
+    // We rely on winner_odds embedded in match objects (returned by some plan levels).
+    // Separate odds fetch attempt for the first 20 upcoming matches:
+    const upcomingIds = upcoming.slice(0, 20).map(m => m.id).join(',')
+    if (upcomingIds) {
+      try {
+        const oddsData = await pandascoreGet('/matches/upcoming', {
+          'filter[id]': upcomingIds,
+          'page[size]': 20,
+          with_odds: true,
+        })
+        if (Array.isArray(oddsData)) {
+          for (const om of oddsData) {
+            const idx = upcoming.findIndex(m => m.id === om.id)
+            if (idx >= 0 && (om.winner_odds || om.odds)) {
+              upcoming[idx] = { ...upcoming[idx], winner_odds: om.winner_odds, odds: om.odds }
+            }
+          }
+        }
+      } catch { /* odds are optional */ }
+    }
 
     for (const m of [...running, ...upcoming]) {
       const normalized = normalizeEsportsMatch(m)
