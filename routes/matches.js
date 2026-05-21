@@ -207,36 +207,8 @@ router.get('/hockey', async (req, res) => {
     console.error('[matches/hockey] NHL error:', err.message)
   }
 
-  // 2. КХЛ / ВХЛ / МХЛ via sstats (if API key available)
-  if (process.env.SSTATS_API_KEY) {
-    // Попробуем распространённые ID хоккейных лиг в sstats
-    const HOCKEY_IDS = [282, 283, 284, 285, 289, 290]
-    try {
-      const results = await Promise.allSettled(
-        HOCKEY_IDS.map(id =>
-          sstatsGet('/Games/list', { upcoming: true, leagueid: id, limit: 5 })
-        )
-      )
-      const khlGames = results.flatMap(r =>
-        r.status === 'fulfilled' ? (r.value?.data || []) : []
-      )
-      for (const g of khlGames) {
-        if (!g.homeTeam?.name || !g.awayTeam?.name) continue
-        games.push({
-          id: `sstats_${g.id}`,
-          home: translateKHL(g.homeTeam.name),
-          away: translateKHL(g.awayTeam.name),
-          league: g.season?.league?.name || 'КХЛ',
-          sport: 'hockey',
-          date: formatHockeyDate(g.date),
-          rawDate: g.date,
-        })
-      }
-      console.log(`[matches/hockey] sstats KHL: ${khlGames.length} games`)
-    } catch (err) {
-      console.error('[matches/hockey] sstats hockey error:', err.message)
-    }
-  }
+  // 2. КХЛ — пока только если будут точные ID лиг от провайдера
+  // (sstats.net не документирует хоккейные лиги — добавим когда получим реальные ID)
 
   // Sort: live first, then by date
   games.sort((a, b) => {
