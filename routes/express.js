@@ -8,18 +8,28 @@ const router = express.Router()
 const EXPRESS_COST_STANDARD = 39
 const EXPRESS_COST_HIGH = 49
 
-// Все лиги — те же что в matches.js (35 лиг)
+// Топовые лиги — гарантированно есть на крупных БК
 const ALL_LEAGUE_IDS = [
-  2, 3, 848,
-  39, 140, 135, 78, 61,
-  94, 88, 144, 203, 179, 207, 197, 210,
-  235, 236,
-  71, 128, 131, 13,
-  253, 262,
-  98, 292, 480,
-  169, 113, 119,
-  40, 79, 62,
-  106, 383, 218,
+  2,   // Champions League
+  3,   // Europa League
+  848, // Europa Conference League
+  39,  // Premier League
+  140, // La Liga
+  135, // Serie A
+  78,  // Bundesliga
+  61,  // Ligue 1
+  235, // Russian Premier League
+  94,  // Primeira Liga (Portugal)
+  88,  // Eredivisie
+  144, // Belgian Pro League
+  79,  // Bundesliga 2
+  62,  // Ligue 2
+  40,  // Championship (England)
+  71,  // Brazilian Serie A
+  98,  // J-League
+  253, // MLS
+  480, // Copa Libertadores
+  13,  // FIFA World Cup
 ]
 
 // Mutex — предотвращает параллельные генерации одного экспресса
@@ -246,8 +256,8 @@ ${ODDS_TRANSLATION}
     return data
   }
 
-  // Нет реальных матчей — не генерируем выдуманные
-  throw new Error(`Недостаточно реальных матчей на ${targetDate} для генерации экспресса`)
+  // Нет реальных матчей в топ-лигах на эту дату
+  throw new Error(`Нет матчей в топ-лигах на ${targetDate}. Попробуйте перегенерировать позже.`)
 }
 
 // ── GET /express/today ────────────────────────────────────────────────────────
