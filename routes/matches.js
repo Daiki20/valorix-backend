@@ -500,22 +500,22 @@ router.get('/basketball', async (req, res) => {
   res.json({ data: games })
 })
 
-// ── Esports (esports-data.p.rapidapi.com) ────────────────────────────────────
-const ESPORTS_HOST = 'esports-data.p.rapidapi.com'
-
-function esportsGetPath(path, params = {}) {
-  const key = process.env.RAPIDAPI_KEY
+// ── Esports — PandaScore (pandascore.co) ─────────────────────────────────────
+// Free tier: 1000 req/hour. Token from pandascore.co (free registration).
+// Add PANDASCORE_TOKEN to Railway Variables to enable the match list.
+function pandascoreGet(path, params = {}) {
+  const token = process.env.PANDASCORE_TOKEN
+  if (!token) return Promise.reject(new Error('No PANDASCORE_TOKEN'))
   const qs = new URLSearchParams(params).toString()
   const fullPath = qs ? `${path}?${qs}` : path
   return new Promise((resolve, reject) => {
     const options = {
-      hostname: ESPORTS_HOST,
+      hostname: 'api.pandascore.co',
       path: fullPath,
       method: 'GET',
-      timeout: 8000,
+      timeout: 10000,
       headers: {
-        'x-rapidapi-host': ESPORTS_HOST,
-        'x-rapidapi-key': key,
+        'Authorization': `Bearer ${token}`,
         'Accept': 'application/json',
       },
     }
@@ -523,6 +523,11 @@ function esportsGetPath(path, params = {}) {
       let data = ''
       res.on('data', c => data += c)
       res.on('end', () => {
+        if (res.statusCode !== 200) {
+          console.error(`[pandascore] ${path} → HTTP ${res.statusCode}: ${data.slice(0, 200)}`)
+          reject(new Error(`pandascore HTTP ${res.statusCode}`))
+          return
+        }
         try { resolve(JSON.parse(data)) }
         catch { reject(new Error('JSON parse error')) }
       })
@@ -533,103 +538,93 @@ function esportsGetPath(path, params = {}) {
   })
 }
 
-// game key → display name
-const ESPORTS_GAME_DISPLAY = { csgo: 'CS2', dota2: 'Dota 2', valorant: 'Valorant', lol: 'LoL' }
-// game key used by frontend/GPT
-const ESPORTS_GAME_FRONTEND = { csgo: 'cs2', dota2: 'dota2', valorant: 'valorant', lol: 'lol' }
+// PandaScore videogame slug → frontend game key
+const PS_GAME_MAP = {
+  'cs-go': 'cs2', 'csgo': 'cs2',
+  'dota-2': 'dota2', 'dota2': 'dota2',
+  'valorant': 'valorant',
+  'league-of-legends': 'lol', 'lol': 'lol',
+}
+const PS_TARGET_GAMES = new Set(['cs2', 'dota2', 'valorant', 'lol'])
 
-function normalizeEsportsMatch(m, gameKey) {
-  const team1 = m.team1?.name || m.home_team?.name || m.radiant?.name || ''
-  const team2 = m.team2?.name || m.away_team?.name || m.dire?.name || ''
+// game key → display name
+const ESPORTS_GAME_DISPLAY = { cs2: 'CS2', dota2: 'Dota 2', valorant: 'Valorant', lol: 'LoL' }
+
+// Normalize PandaScore match object to our format
+function normalizeEsportsMatch(m) {
+  const opp1 = m.opponents?.[0]?.opponent
+  const opp2 = m.opponents?.[1]?.opponent
+  const team1 = opp1?.name || ''
+  const team2 = opp2?.name || ''
   if (!team1 || !team2) return null
 
-  const tournament = m.tournament?.name || m.league?.name || m.event?.name || m.series_name || ''
-  const dateRaw = m.start_time || m.begins_at || m.scheduled_at || m.date || null
-  const gameDisplay = ESPORTS_GAME_DISPLAY[gameKey] || gameKey
-  const gameFrontend = ESPORTS_GAME_FRONTEND[gameKey] || gameKey
+  const gameSlug = m.videogame?.slug || ''
+  const gameFrontend = PS_GAME_MAP[gameSlug] || gameSlug
+  if (!PS_TARGET_GAMES.has(gameFrontend)) return null
 
-  const isLive = m.status === 'running' || m.live === true || m.status === 'inprogress'
+  const gameDisplay = ESPORTS_GAME_DISPLAY[gameFrontend] || gameFrontend.toUpperCase()
+  // Tournament name: prefer serie full_name, fall back to tournament/league name
+  const tournamentName = m.serie?.full_name || m.tournament?.name || m.league?.name || ''
+
+  const isLive = m.status === 'running'
   let score = null
-  if (isLive) {
-    const s1 = m.team1?.score ?? m.team1_score ?? 0
-    const s2 = m.team2?.score ?? m.team2_score ?? 0
-    score = `${s1}:${s2}`
+  if (isLive && m.results?.length >= 2) {
+    score = `${m.results[0]?.score ?? 0}:${m.results[1]?.score ?? 0}`
   }
 
   return {
-    id: `es_${gameKey}_${m.id || m.match_id || Math.random()}`,
+    id: `ps_${m.id}`,
     home: team1,
     away: team2,
-    league: tournament ? `${gameDisplay} · ${tournament}` : gameDisplay,
+    league: tournamentName ? `${gameDisplay} · ${tournamentName}` : gameDisplay,
     game: gameFrontend,
     sport: 'esports',
-    date: dateRaw ? formatHockeyDate(dateRaw) : '',
-    rawDate: dateRaw || new Date().toISOString(),
+    date: m.scheduled_at ? formatHockeyDate(m.scheduled_at) : '',
+    rawDate: m.scheduled_at || new Date().toISOString(),
     isLive,
     score,
     odds1x2: null,
   }
 }
 
-// Try multiple paths to fetch upcoming/live esports matches for one game
-async function fetchEsportsByGame(gameId) {
-  const endpoints = [
-    { path: '/matches/upcoming',  params: { game: gameId, per_page: 20, page: 1 } },
-    { path: '/matches/running',   params: { game: gameId, per_page: 20, page: 1 } },
-    { path: '/matches/live',      params: { game: gameId, per_page: 20, page: 1 } },
-    { path: '/matches/scheduled', params: { game: gameId, per_page: 20, page: 1 } },
-  ]
-  for (const ep of endpoints) {
-    try {
-      const data = await esportsGetPath(ep.path, ep.params)
-      const raw = data?.data || data?.matches || (Array.isArray(data) ? data : [])
-      if (Array.isArray(raw) && raw.length > 0) {
-        console.log(`[matches/esports] ${gameId} → ${ep.path}: ${raw.length} matches`)
-        return raw
-      }
-      // Log if endpoint exists but is empty
-      if (data && !data.message && !data.error) {
-        console.log(`[matches/esports] ${gameId} → ${ep.path}: empty (status=${data.status || 'ok'})`)
-      }
-    } catch (e) {
-      console.log(`[matches/esports] ${gameId} → ${ep.path}: ${e.message}`)
-    }
-  }
-  return []
-}
-
-// GET /matches/esports — cached 1 hour
+// GET /matches/esports — PandaScore, cached 1 hour
 router.get('/esports', async (req, res) => {
   if (esportsCache.data && Date.now() - esportsCache.ts < ESPORTS_TTL) {
     return res.json({ data: esportsCache.data, cached: true })
   }
 
-  if (!process.env.RAPIDAPI_KEY) return res.json({ data: [] })
+  if (!process.env.PANDASCORE_TOKEN) {
+    console.log('[matches/esports] PANDASCORE_TOKEN not set — skipping')
+    return res.json({ data: [], hint: 'Set PANDASCORE_TOKEN in Railway Variables (free at pandascore.co)' })
+  }
 
-  const ESPORTS_GAMES = ['csgo', 'dota2', 'valorant', 'lol']
   const games = []
 
-  const results = await Promise.allSettled(
-    ESPORTS_GAMES.map(gameId =>
-      fetchEsportsByGame(gameId).then(matches => ({ gameId, matches }))
-    )
-  )
+  try {
+    // Fetch running (live) + upcoming matches in parallel
+    const [runningRes, upcomingRes] = await Promise.allSettled([
+      pandascoreGet('/matches/running', {
+        'page[size]': 30,
+        sort: 'begin_at',
+      }),
+      pandascoreGet('/matches/upcoming', {
+        'page[size]': 100,
+        sort: 'begin_at',
+      }),
+    ])
 
-  for (const r of results) {
-    if (r.status !== 'fulfilled') {
-      console.error('[matches/esports] fetch failed:', r.reason?.message)
-      continue
-    }
-    const { gameId, matches } = r.value
-    let added = 0
-    for (const m of matches) {
-      const normalized = normalizeEsportsMatch(m, gameId)
+    const running  = (runningRes.status  === 'fulfilled' && Array.isArray(runningRes.value))  ? runningRes.value  : []
+    const upcoming = (upcomingRes.status === 'fulfilled' && Array.isArray(upcomingRes.value)) ? upcomingRes.value : []
+    console.log(`[matches/esports] PandaScore: ${running.length} running + ${upcoming.length} upcoming`)
+
+    for (const m of [...running, ...upcoming]) {
+      const normalized = normalizeEsportsMatch(m)
       if (!normalized) continue
       if (games.some(g => g.home === normalized.home && g.away === normalized.away)) continue
       games.push(normalized)
-      added++
     }
-    console.log(`[matches/esports] ${gameId}: ${added} normalized & added`)
+  } catch (err) {
+    console.error('[matches/esports] PandaScore error:', err.message)
   }
 
   games.sort((a, b) => {
@@ -638,34 +633,38 @@ router.get('/esports', async (req, res) => {
     return new Date(a.rawDate || 0) - new Date(b.rawDate || 0)
   })
 
+  console.log(`[matches/esports] total ${games.length} matches (${games.filter(g => g.isLive).length} live)`)
+
   if (games.length > 0) {
     esportsCache = { data: games, ts: Date.now() }
   } else {
-    // Cache empty 15 min to avoid hammering API
     esportsCache = { data: [], ts: Date.now() - (ESPORTS_TTL - 15 * 60 * 1000) }
   }
 
-  console.log(`[matches/esports] total ${games.length} matches cached`)
   res.json({ data: games })
 })
 
-// GET /matches/esports-debug — test AllSportsApi esports paths
+// GET /matches/esports-debug — test PandaScore connection
 router.get('/esports-debug', async (req, res) => {
-  if (!process.env.RAPIDAPI_KEY) return res.json({ error: 'No RAPIDAPI_KEY' })
-  const path = req.query.path || `/api/esports/matches/${toAllSportsDate(new Date().toISOString().slice(0,10))}`
+  if (!process.env.PANDASCORE_TOKEN) return res.json({ error: 'PANDASCORE_TOKEN not set' })
   try {
-    const data = await allSportsGetPath(path)
-    const events = data?.events || data?.results || data?.matches || data?.data || null
+    const data = await pandascoreGet('/matches/upcoming', { 'page[size]': 3, sort: 'begin_at' })
+    const matches = Array.isArray(data) ? data : []
     res.json({
-      path,
-      statusCode: 200,
-      keys: Object.keys(data || {}),
-      eventsCount: Array.isArray(events) ? events.length : 'not array',
-      firstEvent: Array.isArray(events) ? events[0] : null,
-      rawPreview: JSON.stringify(data).slice(0, 500),
+      ok: true,
+      count: matches.length,
+      sample: matches.slice(0, 2).map(m => ({
+        id: m.id,
+        name: m.name,
+        status: m.status,
+        scheduled_at: m.scheduled_at,
+        game: m.videogame?.slug,
+        opp1: m.opponents?.[0]?.opponent?.name,
+        opp2: m.opponents?.[1]?.opponent?.name,
+      }))
     })
   } catch (e) {
-    res.json({ path, error: e.message })
+    res.json({ error: e.message })
   }
 })
 
