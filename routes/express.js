@@ -100,8 +100,13 @@ async function fetchRealMatches(targetDate) {
 
   const allGames = results.flatMap(r => Array.isArray(r.data) ? r.data : [])
 
-  // Ищем матчи на targetDate, +1, +2 день — берём тот где больше матчей
-  const candidates = [targetDate, getDateOffset(2), getDateOffset(3)]
+  // Ищем матчи на targetDate и +1 день — берём тот где больше матчей
+  const candidates = [0, 1].map(offset => {
+    const d = new Date(targetDate)
+    d.setDate(d.getDate() + offset)
+    return d.toISOString().slice(0, 10)
+  })
+
   let bestDate = targetDate
   let bestMatches = []
 
@@ -113,11 +118,17 @@ async function fetchRealMatches(targetDate) {
       bestMatches = matches
       bestDate = date
     }
-    if (bestMatches.length >= 5) break // достаточно матчей
+    if (bestMatches.length >= 6) break
   }
 
+  console.log(`[express] fetchRealMatches: target=${targetDate}, best=${bestDate}, found=${bestMatches.length} matches`)
   return { matches: bestMatches, date: bestDate }
 }
+
+// Только ключевые рынки чтобы не раздувать промпт
+const KEY_MARKETS = ['1x2', 'match winner', 'home/draw/away', 'full time result',
+  'over/under', 'total goals', 'both teams to score', 'double chance',
+  'asian handicap', 'handicap']
 
 async function fetchOddsText(gameId) {
   const key = process.env.SSTATS_API_KEY
@@ -134,8 +145,12 @@ async function fetchOddsText(gameId) {
     const lines = []
     for (const market of (bk.odds || [])) {
       if (!market.odds?.length) continue
-      const outcomeParts = market.odds.map(o => `${o.name} = ${o.value}`).join(', ')
-      lines.push(`  [${market.marketName || market.marketId}]: ${outcomeParts}`)
+      const name = (market.marketName || '').toLowerCase()
+      // Только ключевые рынки
+      if (!KEY_MARKETS.some(k => name.includes(k))) continue
+      const outcomeParts = market.odds.map(o => `${o.name}=${o.value}`).join(', ')
+      lines.push(`  [${market.marketName}]: ${outcomeParts}`)
+      if (lines.length >= 6) break // максимум 6 рынков на матч
     }
     return lines.length ? `${bk.bookmakerName}:\n${lines.join('\n')}` : null
   } catch {
@@ -164,8 +179,11 @@ async function generateExpress(targetDate, type = 'standard') {
 
     const matchesWithOdds = realMatches.filter((m, i) => oddsTexts[i] !== null)
     const filteredOdds = oddsTexts.filter(o => o !== null)
-    const useMatches = matchesWithOdds.length >= 2 ? matchesWithOdds : realMatches
-    const useOdds = matchesWithOdds.length >= 2 ? filteredOdds : oddsTexts
+    const useMatchesFull = matchesWithOdds.length >= 2 ? matchesWithOdds : realMatches
+    const useOddsFull = matchesWithOdds.length >= 2 ? filteredOdds : oddsTexts
+    // Максимум 6 матчей в промпте чтобы не превысить TPM лимит
+    const useMatches = useMatchesFull.slice(0, 6)
+    const useOdds = useOddsFull.slice(0, 6)
 
     const matchBlocks = useMatches.map((m, i) => {
       const oddsBlock = useOdds[i]
