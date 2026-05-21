@@ -8,7 +8,19 @@ const router = express.Router()
 const EXPRESS_COST_STANDARD = 39
 const EXPRESS_COST_HIGH = 49
 
-const TOP_LEAGUE_IDS = [2, 3, 848, 39, 140, 135, 78, 61, 235]
+// Все лиги — те же что в matches.js (35 лиг)
+const ALL_LEAGUE_IDS = [
+  2, 3, 848,
+  39, 140, 135, 78, 61,
+  94, 88, 144, 203, 179, 207, 197, 210,
+  235, 236,
+  71, 128, 131, 13,
+  253, 262,
+  98, 292, 480,
+  169, 113, 119,
+  40, 79, 62,
+  106, 383, 218,
+]
 
 // Mutex — предотвращает параллельные генерации одного экспресса
 const generating = {}
@@ -92,8 +104,8 @@ async function fetchRealMatches(targetDate) {
   if (!key) return { matches: [], date: targetDate }
 
   const results = await Promise.all(
-    TOP_LEAGUE_IDS.map(id =>
-      httpsGet(`https://api.sstats.net/Games/list?upcoming=true&leagueid=${id}&limit=10&apikey=${key}`)
+    ALL_LEAGUE_IDS.map(id =>
+      httpsGet(`https://api.sstats.net/Games/list?upcoming=true&leagueid=${id}&limit=5&apikey=${key}`)
         .catch(() => ({ data: [] }))
     )
   )
