@@ -571,6 +571,33 @@ function normalizeEsportsMatch(m, gameKey) {
   }
 }
 
+// Try multiple paths to fetch upcoming/live esports matches for one game
+async function fetchEsportsByGame(gameId) {
+  const endpoints = [
+    { path: '/matches/upcoming',  params: { game: gameId, per_page: 20, page: 1 } },
+    { path: '/matches/running',   params: { game: gameId, per_page: 20, page: 1 } },
+    { path: '/matches/live',      params: { game: gameId, per_page: 20, page: 1 } },
+    { path: '/matches/scheduled', params: { game: gameId, per_page: 20, page: 1 } },
+  ]
+  for (const ep of endpoints) {
+    try {
+      const data = await esportsGetPath(ep.path, ep.params)
+      const raw = data?.data || data?.matches || (Array.isArray(data) ? data : [])
+      if (Array.isArray(raw) && raw.length > 0) {
+        console.log(`[matches/esports] ${gameId} → ${ep.path}: ${raw.length} matches`)
+        return raw
+      }
+      // Log if endpoint exists but is empty
+      if (data && !data.message && !data.error) {
+        console.log(`[matches/esports] ${gameId} → ${ep.path}: empty (status=${data.status || 'ok'})`)
+      }
+    } catch (e) {
+      console.log(`[matches/esports] ${gameId} → ${ep.path}: ${e.message}`)
+    }
+  }
+  return []
+}
+
 // GET /matches/esports — cached 1 hour
 router.get('/esports', async (req, res) => {
   if (esportsCache.data && Date.now() - esportsCache.ts < ESPORTS_TTL) {
@@ -584,27 +611,25 @@ router.get('/esports', async (req, res) => {
 
   const results = await Promise.allSettled(
     ESPORTS_GAMES.map(gameId =>
-      esportsGetPath('/matches/upcoming', { game: gameId, per_page: 20, page: 1 })
-        .then(data => ({ gameId, data }))
+      fetchEsportsByGame(gameId).then(matches => ({ gameId, matches }))
     )
   )
 
   for (const r of results) {
     if (r.status !== 'fulfilled') {
-      console.error('[matches/esports] failed:', r.reason?.message)
+      console.error('[matches/esports] fetch failed:', r.reason?.message)
       continue
     }
-    const { gameId, data } = r.value
-    const matches = data?.data || data?.matches || (Array.isArray(data) ? data : [])
+    const { gameId, matches } = r.value
     let added = 0
-    for (const m of (Array.isArray(matches) ? matches : [])) {
+    for (const m of matches) {
       const normalized = normalizeEsportsMatch(m, gameId)
       if (!normalized) continue
       if (games.some(g => g.home === normalized.home && g.away === normalized.away)) continue
       games.push(normalized)
       added++
     }
-    console.log(`[matches/esports] ${gameId}: ${added} matches added`)
+    console.log(`[matches/esports] ${gameId}: ${added} normalized & added`)
   }
 
   games.sort((a, b) => {
@@ -622,6 +647,19 @@ router.get('/esports', async (req, res) => {
 
   console.log(`[matches/esports] total ${games.length} matches cached`)
   res.json({ data: games })
+})
+
+// GET /matches/esports-debug — shows raw API response (no cache, for debugging)
+router.get('/esports-debug', async (req, res) => {
+  if (!process.env.RAPIDAPI_KEY) return res.json({ error: 'No RAPIDAPI_KEY' })
+  const game = req.query.game || 'csgo'
+  const endpoint = req.query.endpoint || '/matches/upcoming'
+  try {
+    const data = await esportsGetPath(endpoint, { game, per_page: 5, page: 1 })
+    res.json({ endpoint, game, raw: data })
+  } catch (e) {
+    res.json({ endpoint, game, error: e.message })
+  }
 })
 
 module.exports = router
