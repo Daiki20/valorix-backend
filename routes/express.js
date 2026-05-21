@@ -234,7 +234,8 @@ ${ODDS_TRANSLATION}
       { role: 'user', content: prompt },
     ])
 
-    const jsonMatch = content.match(/\{[\s\S]*\}/)
+    const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
     if (!jsonMatch) throw new Error('Invalid JSON from OpenAI')
     let data
     try { data = JSON.parse(jsonMatch[0]) } catch { throw new Error('JSON parse failed') }
