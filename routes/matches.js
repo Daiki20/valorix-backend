@@ -389,12 +389,15 @@ router.get('/hockey', async (req, res) => {
     return new Date(a.rawDate || 0) - new Date(b.rawDate || 0)
   })
 
-  // Only cache if we actually got data — don't lock in empty results for 2 hrs
   if (games.length > 0) {
+    // Full cache: 2 hours
     hockeyCache = { data: games, ts: Date.now() }
     console.log(`[matches/hockey] cached ${games.length} total games for 2 hrs`)
   } else {
-    console.log('[matches/hockey] WARNING: 0 games returned — skipping cache so next request retries')
+    // Empty result (API quota exceeded or no games today) — cache for 30 min
+    // to avoid hammering the API and burning daily quota
+    hockeyCache = { data: [], ts: Date.now() - (HOCKEY_TTL - 30 * 60 * 1000) }
+    console.log('[matches/hockey] WARNING: 0 games — caching empty for 30 min to protect quota')
   }
   res.json({ data: games })
 })
