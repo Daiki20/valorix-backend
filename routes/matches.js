@@ -1021,32 +1021,32 @@ router.get('/hockey-cache-reset', (req, res) => {
   res.json({ ok: true, message: 'Hockey cache + season ID cache cleared — next /matches/hockey will re-fetch' })
 })
 
-// GET /matches/hockey-debug — test Sofascore direct API + current season IDs
+// GET /matches/hockey-debug — full chain test: keys, season IDs, match counts
 router.get('/hockey-debug', async (req, res) => {
-  const result = { ts: new Date().toISOString(), tournaments: [] }
+  const primaryKey   = process.env.RAPIDAPI_KEY    || null
+  const secondaryKey = process.env.ICEHOCKEY_API_KEY || null
+  const result = {
+    ts: new Date().toISOString(),
+    keys: {
+      RAPIDAPI_KEY:      primaryKey   ? primaryKey.slice(0, 8) + '...' : 'NOT SET',
+      ICEHOCKEY_API_KEY: secondaryKey ? secondaryKey.slice(0, 8) + '...' : 'NOT SET',
+      sameKey: primaryKey === secondaryKey,
+    },
+    tournaments: [],
+  }
 
-  for (const t of HOCKEY_TOURNAMENTS_BASE) {
-    const entry = { id: t.id, league: t.league, fallbackSeasonId: t.fallbackSeasonId }
+  // Test AllSportsApi2 quota status for both keys
+  const testPath = `/api/tournament/3/season/81043/matches/next/0`
+  for (const [label, key] of [['primary', primaryKey], ['secondary', secondaryKey]]) {
+    if (!key) { result[`allsports_${label}`] = 'KEY NOT SET'; continue }
     try {
-      const seasonsData = await sofascoreGet(`/api/v1/unique-tournament/${t.id}/seasons`)
-      const seasons = seasonsData?.seasons || []
-      entry.sofascoreSeasons = seasons.slice(0, 3).map(s => ({ id: s.id, year: s.year }))
-      const seasonId = seasons[0]?.id || t.fallbackSeasonId
-      entry.resolvedSeasonId = seasonId
-
-      const matchesData = await sofascoreGet(`/api/v1/unique-tournament/${t.id}/season/${seasonId}/events/next/0`)
-      const evts = matchesData?.events || []
-      entry.eventsCount = evts.length
-      entry.sampleEvents = evts.slice(0, 3).map(e => ({
-        home: e.homeTeam?.name,
-        away: e.awayTeam?.name,
-        status: e.status?.type,
-        ts: e.startTimestamp,
-      }))
-    } catch (err) {
-      entry.error = err.message
+      const data = await rapidApiGet('allsportsapi2.p.rapidapi.com', testPath, key)
+      const evts = data?.events?.length || 0
+      const msg  = data?.message || ''
+      result[`allsports_${label}`] = msg.includes('exceeded') ? `QUOTA_EXCEEDED: ${msg.slice(0,80)}` : `OK — ${evts} events`
+    } catch (e) {
+      result[`allsports_${label}`] = `ERROR: ${e.message}`
     }
-    result.tournaments.push(entry)
   }
 
   res.json(result)
