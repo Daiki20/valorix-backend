@@ -326,12 +326,39 @@ const KHL_TEAMS_RU = {
   'Dinamo Riga': 'Динамо Рига', 'Dinamo Minsk': 'Динамо Минск',
   'Admiral': 'Адмирал', 'Lada': 'Лада', 'HC Sochi': 'ХК Сочи',
   'Vityaz': 'Витязь', 'Metallurg Novokuznetsk': 'Металлург Нк',
+  'Neftekhimik Nizhnekamsk': 'Нефтехимик', 'Sibir Novosibirsk': 'Сибирь',
+  'HC Amur': 'Амур', 'HC Torpedo': 'Торпедо', 'HC Traktor': 'Трактор',
+  'HC Spartak': 'Спартак', 'HC Avangard': 'Авангард', 'HC Admiral': 'Адмирал',
 }
-function translateKHL(name) {
+
+// ИИХФ: национальные сборные
+const IIHF_TEAMS_RU = {
+  'Canada': 'Канада', 'Russia': 'Россия', 'Finland': 'Финляндия',
+  'Sweden': 'Швеция', 'USA': 'США', 'United States': 'США',
+  'Czech Republic': 'Чехия', 'Czechia': 'Чехия', 'Slovakia': 'Словакия',
+  'Switzerland': 'Швейцария', 'Germany': 'Германия', 'Latvia': 'Латвия',
+  'Denmark': 'Дания', 'Norway': 'Норвегия', 'France': 'Франция',
+  'Austria': 'Австрия', 'Hungary': 'Венгрия', 'Slovenia': 'Словения',
+  'Great Britain': 'Великобритания', 'Kazakhstan': 'Казахстан',
+  'Belarus': 'Беларусь', 'Poland': 'Польша', 'Italy': 'Италия',
+  'Japan': 'Япония', 'South Korea': 'Ю. Корея', 'Ukraine': 'Украина',
+  'Lithuania': 'Литва', 'Estonia': 'Эстония', 'Romania': 'Румыния',
+}
+
+function translateHockeyTeam(name) {
+  // ИИХФ национальные сборные — точное совпадение
+  if (IIHF_TEAMS_RU[name]) return IIHF_TEAMS_RU[name]
+  // КХЛ/ВХЛ/МХЛ — подстрока
   for (const [en, ru] of Object.entries(KHL_TEAMS_RU)) {
     if (name.includes(en)) return ru
   }
   return name
+}
+
+// Sofascore CDN team image URL
+function sofascoreTeamImg(teamId) {
+  if (!teamId) return null
+  return `https://api.sofascore.com/api/v1/team/${teamId}/image`
 }
 
 // NHL team names (English → readable)
@@ -406,8 +433,10 @@ function normalizeSofascoreMatch(event, leagueName, tournamentId, seasonId) {
     awayTeamId: event.awayTeam?.id,
     tournamentId,
     seasonId,
-    home: translateKHL(home),
-    away: translateKHL(away),
+    home: translateHockeyTeam(home),
+    away: translateHockeyTeam(away),
+    homeImg: sofascoreTeamImg(event.homeTeam?.id),
+    awayImg: sofascoreTeamImg(event.awayTeam?.id),
     league: leagueName,
     sport: 'hockey',
     date: rawDate ? formatHockeyDate(rawDate) : '',
@@ -467,6 +496,8 @@ router.get('/hockey', async (req, res) => {
         games.push({
           id: `nhl_${game.id}`,
           home, away,
+          homeImg: game.homeTeam?.logo || `https://assets.nhle.com/logos/nhl/svg/${homeAbbr}_light.svg`,
+          awayImg: game.awayTeam?.logo || `https://assets.nhle.com/logos/nhl/svg/${awayAbbr}_light.svg`,
           league: 'НХЛ · Плей-офф',
           sport: 'hockey',
           date: formatHockeyDate(game.startTimeUTC),
