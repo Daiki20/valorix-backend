@@ -1,5 +1,6 @@
 const express = require('express')
 const https = require('https')
+const zlib = require('zlib')
 const router = express.Router()
 
 const SSTATS_BASE = 'https://api.sstats.net'
@@ -900,9 +901,20 @@ function pinnacleGet(path) {
       },
     }
     const req = https.request(options, res => {
+      // Pinnacle API returns gzip-compressed JSON — decompress before parsing
+      const encoding = res.headers['content-encoding']
+      let stream = res
+      if (encoding === 'gzip') {
+        stream = res.pipe(zlib.createGunzip())
+      } else if (encoding === 'deflate') {
+        stream = res.pipe(zlib.createInflate())
+      } else if (encoding === 'br') {
+        stream = res.pipe(zlib.createBrotliDecompress())
+      }
+
       let data = ''
-      res.on('data', c => data += c)
-      res.on('end', () => {
+      stream.on('data', c => data += c)
+      stream.on('end', () => {
         if (res.statusCode !== 200) {
           console.warn(`[pinnacle] ${path} → HTTP ${res.statusCode}: ${data.slice(0, 200)}`)
           reject(new Error(`pinnacle HTTP ${res.statusCode}`)); return
@@ -913,6 +925,7 @@ function pinnacleGet(path) {
           reject(new Error('JSON parse error'))
         }
       })
+      stream.on('error', reject)
     })
     req.on('error', reject)
     req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
@@ -1068,10 +1081,10 @@ async function fetchPinnacleHockeyOdds() {
 }
 
 // ── Hockey odds (The Odds API) ────────────────────────────────────────────────
-// icehockey_nhl, icehockey_khl, icehockey_shl — all covered by free 500 req/month plan
+// icehockey_nhl, icehockey_khl — icehockey_shl removed (returns 404 Unknown sport)
 let hockeyOddsCache = { data: null, ts: 0 }
 const HOCKEY_ODDS_TTL = 6 * 60 * 60 * 1000   // 6 hours — conserves monthly quota
-const HOCKEY_ODDS_SPORTS = ['icehockey_nhl', 'icehockey_khl', 'icehockey_shl']
+const HOCKEY_ODDS_SPORTS = ['icehockey_nhl', 'icehockey_khl']
 
 async function fetchHockeyOdds() {
   if (hockeyOddsCache.data && Date.now() - hockeyOddsCache.ts < HOCKEY_ODDS_TTL) {
