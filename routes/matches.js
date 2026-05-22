@@ -1045,9 +1045,8 @@ async function fetchPinnacleHockeyOdds() {
       const data = await pinnacleGet(
         `/kit/v1/markets?sport_id=${sportId}&is_have_odds=true&event_type=prematch`
       )
-      const items = data?.markets ?? data?.data ?? data ?? []
-      console.log(`[pinnacle] raw response keys: ${Object.keys(data || {}).join(', ')}`)
-      console.log(`[pinnacle] all hockey: ${items.length} events, first item keys: ${Object.keys(items[0] || {}).join(', ')}`)
+      const items = data?.events ?? data?.markets ?? data?.data ?? (Array.isArray(data) ? data : [])
+      console.log(`[pinnacle] all hockey: ${items.length} events`)
       const parsed = parsePinnacleMarkets(items)
       const count = Math.floor(Object.keys(parsed).length / 2)
       console.log(`[pinnacle/odds] all hockey: ${count} matches`)
@@ -1060,15 +1059,13 @@ async function fetchPinnacleHockeyOdds() {
       try {
         const qs = `/kit/v1/markets?sport_id=${sportId}&league_id=${id}&is_have_odds=true&event_type=prematch`
         const data = await pinnacleGet(qs)
-        // Debug: log raw response structure to understand format
-        console.log(`[pinnacle] ${label} raw keys: ${Object.keys(data || {}).join(', ')}`)
-        const topArr = data?.markets ?? data?.data ?? data ?? []
-        const items = Array.isArray(topArr) ? topArr : Object.values(topArr)
+        // Response shape: { sport_id, sport_name, last, last_call, events: [...] }
+        const items = data?.events ?? data?.markets ?? data?.data ?? (Array.isArray(data) ? data : [])
         if (items.length > 0) {
           console.log(`[pinnacle] ${label} first item keys: ${Object.keys(items[0]).join(', ')}`)
           console.log(`[pinnacle] ${label} first item: ${JSON.stringify(items[0]).slice(0, 500)}`)
         } else {
-          console.log(`[pinnacle] ${label} items empty, full response: ${JSON.stringify(data).slice(0, 500)}`)
+          console.log(`[pinnacle] ${label} events empty`)
         }
         const parsed = parsePinnacleMarkets(items)
         const count = Math.floor(Object.keys(parsed).length / 2)
