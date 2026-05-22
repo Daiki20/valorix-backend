@@ -426,17 +426,22 @@ function normalizeSofascoreMatch(event, leagueName, tournamentId, seasonId) {
     score = `${hs}:${as_}`
   }
 
+  const homeTeamId = event.homeTeam?.id
+  const awayTeamId = event.awayTeam?.id
   return {
     id: `as_${event.id || Math.random()}`,
     eventId: event.id,
-    homeTeamId: event.homeTeam?.id,
-    awayTeamId: event.awayTeam?.id,
+    homeTeamId,
+    awayTeamId,
     tournamentId,
     seasonId,
+    homeEn: home,   // original English name — used for odds API lookup
+    awayEn: away,
     home: translateHockeyTeam(home),
     away: translateHockeyTeam(away),
-    homeImg: sofascoreTeamImg(event.homeTeam?.id),
-    awayImg: sofascoreTeamImg(event.awayTeam?.id),
+    // Relative path — frontend prepends API_BASE so backend proxies the image
+    homeImg: homeTeamId ? `/matches/team-logo/${homeTeamId}` : null,
+    awayImg: awayTeamId ? `/matches/team-logo/${awayTeamId}` : null,
     league: leagueName,
     sport: 'hockey',
     date: rawDate ? formatHockeyDate(rawDate) : '',
@@ -488,16 +493,21 @@ router.get('/hockey', async (req, res) => {
         if (state === 'OFF' || state === 'FINAL') continue
         const homeAbbr = game.homeTeam?.abbrev || ''
         const awayAbbr = game.awayTeam?.abbrev || ''
-        const home = NHL_TEAMS[homeAbbr] ||
-          `${game.homeTeam?.placeName?.default || ''} ${game.homeTeam?.commonName?.default || ''}`.trim()
-        const away = NHL_TEAMS[awayAbbr] ||
-          `${game.awayTeam?.placeName?.default || ''} ${game.awayTeam?.commonName?.default || ''}`.trim()
+        const homeEnName = `${game.homeTeam?.placeName?.default || ''} ${game.homeTeam?.commonName?.default || ''}`.trim() || homeAbbr
+        const awayEnName = `${game.awayTeam?.placeName?.default || ''} ${game.awayTeam?.commonName?.default || ''}`.trim() || awayAbbr
+        const home = NHL_TEAMS[homeAbbr] || homeEnName
+        const away = NHL_TEAMS[awayAbbr] || awayEnName
         const isLive = state === 'LIVE' || state === 'CRIT'
+        // NHL logos: use API-provided URL, fallback to NHL CDN
+        const homeImg = game.homeTeam?.logo ||
+          (homeAbbr ? `https://assets.nhle.com/logos/nhl/svg/${homeAbbr}_dark.svg` : null)
+        const awayImg = game.awayTeam?.logo ||
+          (awayAbbr ? `https://assets.nhle.com/logos/nhl/svg/${awayAbbr}_dark.svg` : null)
         games.push({
           id: `nhl_${game.id}`,
+          homeEn: homeEnName, awayEn: awayEnName,
           home, away,
-          homeImg: game.homeTeam?.logo || `https://assets.nhle.com/logos/nhl/svg/${homeAbbr}_light.svg`,
-          awayImg: game.awayTeam?.logo || `https://assets.nhle.com/logos/nhl/svg/${awayAbbr}_light.svg`,
+          homeImg, awayImg,
           league: 'НХЛ · Плей-офф',
           sport: 'hockey',
           date: formatHockeyDate(game.startTimeUTC),
@@ -580,7 +590,7 @@ router.get('/hockey', async (req, res) => {
       const oddsMap = await fetchHockeyOdds()
       let oddsOverlaid = 0
       for (const game of games) {
-        const odds = lookupOdds(game.home, game.away, oddsMap)
+        const odds = lookupOdds(game.homeEn || game.home, game.awayEn || game.away, oddsMap)
         if (odds) { game.odds1x2 = odds; oddsOverlaid++ }
       }
       console.log(`[matches/hockey] overlaid odds on ${oddsOverlaid}/${games.length} matches`)
@@ -798,11 +808,13 @@ function buildOddsLookup(events) {
   return map
 }
 
-// Match PandaScore team names against odds lookup; return odds1x2 or null
+// Match team names against odds lookup; return odds1x2 or null
 function lookupOdds(psHome, psAway, oddsMap) {
   if (!oddsMap || !Object.keys(oddsMap).length) return null
   const hN = _normOdds(psHome)
   const aN = _normOdds(psAway)
+  // Guard: if names normalized to empty (e.g. Cyrillic), skip — avoids false matches
+  if (!hN || !aN) return null
   // Exact lookup
   let entry = oddsMap[hN] || oddsMap[aN]
   // Substring fallback
@@ -1042,6 +1054,58 @@ router.get('/esports', async (req, res) => {
   }
 
   res.json({ data: games })
+})
+
+// GET /matches/team-logo/:teamId — proxy Sofascore team image (browser can't call Sofascore directly)
+// Cached 24h on client + 1h on server to avoid hammering Sofascore
+const logoCache = new Map()  // teamId → { buf, type, ts }
+const LOGO_TTL = 60 * 60 * 1000  // 1h
+
+router.get('/team-logo/:teamId', async (req, res) => {
+  const teamId = parseInt(req.params.teamId, 10)
+  if (!teamId) return res.status(400).end()
+
+  const cached = logoCache.get(teamId)
+  if (cached && Date.now() - cached.ts < LOGO_TTL) {
+    res.set('Content-Type', cached.type)
+    res.set('Cache-Control', 'public, max-age=86400')
+    return res.send(cached.buf)
+  }
+
+  try {
+    const imgData = await new Promise((resolve, reject) => {
+      const options = {
+        hostname: 'api.sofascore.com',
+        path: `/api/v1/team/${teamId}/image`,
+        method: 'GET',
+        timeout: 6000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'image/webp,image/png,image/*,*/*',
+          'Referer': 'https://www.sofascore.com/',
+          'Origin': 'https://www.sofascore.com',
+        },
+      }
+      const req2 = https.request(options, r => {
+        const chunks = []
+        r.on('data', c => chunks.push(c))
+        r.on('end', () => {
+          if (r.statusCode !== 200) { reject(new Error(`HTTP ${r.statusCode}`)); return }
+          resolve({ buf: Buffer.concat(chunks), type: r.headers['content-type'] || 'image/png' })
+        })
+      })
+      req2.on('error', reject)
+      req2.on('timeout', () => { req2.destroy(); reject(new Error('timeout')) })
+      req2.end()
+    })
+    logoCache.set(teamId, { ...imgData, ts: Date.now() })
+    res.set('Content-Type', imgData.type)
+    res.set('Cache-Control', 'public, max-age=86400')
+    res.send(imgData.buf)
+  } catch (err) {
+    // Return 404 — frontend falls back to letter avatar
+    res.status(404).end()
+  }
 })
 
 // GET /matches/hockey-cache-reset — admin: force-expire hockey cache so next request re-fetches
