@@ -908,7 +908,10 @@ function pinnacleGet(path) {
           reject(new Error(`pinnacle HTTP ${res.statusCode}`)); return
         }
         try { resolve(JSON.parse(data)) }
-        catch { reject(new Error('JSON parse error')) }
+        catch {
+          console.warn(`[pinnacle] JSON parse failed for ${path}, status=${res.statusCode}, body: ${data.slice(0, 400)}`)
+          reject(new Error('JSON parse error'))
+        }
       })
     })
     req.on('error', reject)
