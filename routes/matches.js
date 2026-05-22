@@ -374,43 +374,44 @@ router.get('/hockey', async (req, res) => {
     console.error('[matches/hockey] NHL error:', err.message)
   }
 
-  // 2. AllSportsApi — tournament-based matches (KHL, IIHF, MHL, VHL, NHL backup)
+  // 2. AllSportsApi — date-based fetch (no season IDs needed — works for any league/tournament)
+  // Also fetch tomorrow to catch games in different time zones
   if (process.env.RAPIDAPI_KEY) {
-    // Skip NHL from AllSportsApi if free NHL API already returned games (avoid duplicates)
-    const tournamentsToFetch = nhlCount > 0
-      ? HOCKEY_TOURNAMENTS.filter(t => t.id !== 234)
-      : HOCKEY_TOURNAMENTS
+    const todayStr  = toAllSportsDate(todayDate)
+    const tomorrow  = new Date(todayDate); tomorrow.setDate(tomorrow.getDate() + 1)
+    const tomorrowStr = toAllSportsDate(tomorrow.toISOString().slice(0, 10))
 
-    const results = await Promise.allSettled(
-      tournamentsToFetch.map(t =>
-        allSportsGetPath(`/api/tournament/${t.id}/season/${t.seasonId}/matches/next/0`)
-          .then(data => {
-            const evts = data?.events || []
-            console.log(`[matches/hockey] T=${t.id} "${t.league}": ${evts.length} events, hasErr=${!!data?.message}`)
-            return { ...t, events: evts }
-          })
-      )
-    )
+    const [todayRes, tomorrowRes] = await Promise.allSettled([
+      allSportsGetPath(`/api/hockey/matches/${todayStr}`),
+      allSportsGetPath(`/api/hockey/matches/${tomorrowStr}`),
+    ])
 
-    for (const r of results) {
+    for (const r of [todayRes, tomorrowRes]) {
       if (r.status !== 'fulfilled') {
-        console.error('[matches/hockey] AllSportsApi rejected:', r.reason?.message)
+        console.error('[matches/hockey] AllSportsApi date fetch rejected:', r.reason?.message)
         continue
       }
-      // NOTE: use r.value (not outer t) — t is out of scope here
-      const { id: tournamentId, seasonId, league, events } = r.value
+      const events = r.value?.events || r.value?.results || r.value?.matches || []
+      console.log(`[matches/hockey] AllSportsApi date: ${events.length} raw events`)
       let added = 0
       for (const event of events) {
-        const normalized = normalizeSofascoreMatch(event, league, tournamentId, seasonId)
+        const leagueName = event.tournament?.name || event.league?.name ||
+          event.homeTeam?.tournament?.name || ''
+        if (!isImportantHockeyLeague(leagueName)) continue
+        const statusType = (event.status?.type || '').toLowerCase()
+        if (statusType === 'finished') continue
+        const home = event.homeTeam?.name || ''
+        const away = event.awayTeam?.name || ''
+        if (!home || !away) continue
+        if (games.some(g => g.home === translateKHL(home) && g.away === translateKHL(away))) continue
+        const tournamentId = event.tournament?.uniqueTournament?.id || event.tournament?.id || null
+        const seasonId = event.season?.id || null
+        const normalized = normalizeSofascoreMatch(event, leagueName, tournamentId, seasonId)
         if (!normalized) continue
-        // Dedup with NHL free API results (same team names)
-        if (games.some(g => g.home === normalized.home && g.away === normalized.away)) continue
         games.push(normalized)
         added++
       }
-      if (added > 0 || events.length > 0) {
-        console.log(`[matches/hockey] ${league}: ${added}/${events.length} added`)
-      }
+      console.log(`[matches/hockey] AllSportsApi date added: ${added}`)
     }
     console.log(`[matches/hockey] AllSportsApi total: ${games.length} games`)
   } else {
@@ -885,6 +886,13 @@ router.get('/esports', async (req, res) => {
   }
 
   res.json({ data: games })
+})
+
+// GET /matches/hockey-cache-reset — admin: force-expire hockey cache so next request re-fetches
+router.get('/hockey-cache-reset', (req, res) => {
+  hockeyCache = { data: null, ts: 0 }
+  hockeyOddsCache = { data: null, ts: 0 }
+  res.json({ ok: true, message: 'Hockey cache cleared — next /matches/hockey will re-fetch' })
 })
 
 // GET /matches/esports-debug — test PandaScore connection + inspect odds fields
