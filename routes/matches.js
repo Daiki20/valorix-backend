@@ -656,12 +656,17 @@ router.get('/hockey', async (req, res) => {
           game.odds1x2 = odds
           oddsOverlaid++
         } else if (noMatchLog < 10) {
-          // Log what name we tried to match so aliases can be added/fixed
           const rawH = game.homeEn || game.home
           const rawA = game.awayEn || game.away
           const hN = normalizeTeamName(rawH)
           const aN = normalizeTeamName(rawA)
-          console.log(`[odds/no-match] "${rawH}"→"${hN}" | "${rawA}"→"${aN}"`)
+          console.log('[MATCH CHECK]', JSON.stringify({
+            gameHome: hN,
+            gameAway: aN,
+            rawHome: rawH,
+            rawAway: rawA,
+            availableOdds: Object.keys(oddsMap).filter((_, i) => i % 2 === 0).slice(0, 20),
+          }))
           noMatchLog++
         }
       }
@@ -857,34 +862,40 @@ function extractOddsApiOdds(event) {
 const _normOdds = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
 
 // ── National team canonical aliases (applied to normalized English names) ────
-// Both Pinnacle and local APIs must resolve to the same canonical form.
-// Key = result of _normOdds(apiName); Value = canonical English slug.
-const NATIONAL_TEAM_NORM = {
-  // Great Britain variants
-  'greatbritain':          'britain',
-  'unitedkingdom':         'britain',
-  'gbr':                   'britain',
-  // Czech Republic / Czechia
-  'czechrepublic':         'czechia',
-  'cze':                   'czechia',
-  // Korea
-  'southkorea':            'korea',
-  'korearep':              'korea',
-  'republicofkorea':       'korea',
+// Direction: KEY = local/alternate form → VALUE = Pinnacle canonical form.
+// Pinnacle is authoritative: if Pinnacle says "United States", canonical = "unitedstates".
+// Local APIs that say "USA" must alias TO "unitedstates", not the other way around.
+const TEAM_ALIASES = {
+  // USA — Pinnacle uses "United States"
+  'usa':                            'unitedstates',
+  'unitedstatesofamerica':          'unitedstates',
+  'us':                             'unitedstates',
+  // Czech Republic — Pinnacle uses "Czech Republic"
+  'czechia':                        'czechrepublic',
+  'cze':                            'czechrepublic',
+  // Great Britain — Pinnacle uses "Britain" / "Great Britain" (check logs)
+  'greatbritain':                   'britain',
+  'unitedkingdom':                  'britain',
+  'gbr':                            'britain',
+  'gb':                             'britain',
+  // Korea — Pinnacle uses "South Korea"
+  'korea':                          'southkorea',
+  'korearep':                       'southkorea',
+  'republicofkorea':                'southkorea',
+  'kor':                            'southkorea',
   // DPRK
-  'northkorea':            'dprkorea',
+  'northkorea':                     'dprkorea',
   'democraticpeoplesrepublicofkorea': 'dprkorea',
-  // USA
-  'unitedstates':          'usa',
-  'unitedstatesofamerica': 'usa',
   // Belarus / Russia
-  'belorussia':            'belarus',
-  'byelorussia':           'belarus',
-  'russianfederation':     'russia',
+  'belorussia':                     'belarus',
+  'byelorussia':                    'belarus',
+  'russianfederation':              'russia',
   // Slovakia
-  'slovakrepublic':        'slovakia',
+  'slovakrepublic':                 'slovakia',
   // Switzerland
-  'swiss':                 'switzerland',
+  'swiss':                          'switzerland',
+  // Loko Yaroslavl short form (substring match helper)
+  'lokoyaroslavl':                  'loko',
 }
 
 // ── Cyrillic → Latin transliteration (BGN/PCGN, common in sports databases) ────
@@ -994,9 +1005,9 @@ function normalizeTeamName(name) {
   if (firstWord && HOCKEY_TEAM_ALIASES[firstWord]) return HOCKEY_TEAM_ALIASES[firstWord]
   // 3. Has Cyrillic → transliterate (fallback for unknown clubs)
   if (/[а-яё]/.test(cyrKey)) return _translit(cyrKey) || _normOdds(name)
-  // 4. English → normalize, then apply national-team canonical map
+  // 4. English → normalize, then apply team aliases (local variant → Pinnacle canonical)
   const normed = _normOdds(name)
-  return NATIONAL_TEAM_NORM[normed] || normed
+  return TEAM_ALIASES[normed] || normed
 }
 
 // Build lookup: normalizedTeamName → { homeOdds, awayOdds, homeNorm, awayNorm }
@@ -1244,6 +1255,16 @@ async function fetchPinnacleHockeyOdds() {
         .map(([k, n]) => `${k}×${n}`).join(' | '))
     } else {
       console.log('[pinnacle/odds] no prematch events returned — all games may be live or Pinnacle quota exceeded')
+    }
+
+    // Full team name dump so we can see exactly what Pinnacle returns before normalization
+    if (items.length) {
+      console.log('[PINNACLE FULL]', JSON.stringify(
+        items.slice(0, 30).map(e => ({
+          home: e.home ?? e.home_team ?? e.teams?.home?.name ?? e.homeTeam ?? '?',
+          away: e.away ?? e.away_team ?? e.teams?.away?.name ?? e.awayTeam ?? '?',
+        }))
+      ))
     }
 
     const parsed = parsePinnacleMarkets(items)
