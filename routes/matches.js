@@ -135,17 +135,17 @@ function sofascoreGet(path) {
 // ── AllSportsApi helper (direct path) ────────────────────────────────────────
 // Uses Sofascore-mirrored tournament endpoints. Format:
 //   /api/tournament/{id}/season/{sid}/matches/next/0
-function allSportsGetPath(path) {
-  const key = process.env.RAPIDAPI_KEY
+// If RAPIDAPI_KEY quota is exceeded, retries with ICEHOCKEY_API_KEY (separate account)
+function rapidApiGet(host, path, apiKey) {
   return new Promise((resolve, reject) => {
     const options = {
-      hostname: 'allsportsapi2.p.rapidapi.com',
+      hostname: host,
       path,
       method: 'GET',
       timeout: 8000,
       headers: {
-        'X-RapidAPI-Key': key,
-        'X-RapidAPI-Host': 'allsportsapi2.p.rapidapi.com',
+        'X-RapidAPI-Key': apiKey,
+        'X-RapidAPI-Host': host,
         'Accept': 'application/json',
       },
     }
@@ -163,15 +163,38 @@ function allSportsGetPath(path) {
   })
 }
 
-// Keep legacy helper for basketball (uses old endpoint format)
-function allSportsGet(sport, endpoint) {
+function isQuotaError(data) {
+  const msg = data?.message || ''
+  return msg.includes('exceeded') && (msg.includes('quota') || msg.includes('Requests'))
+}
+
+async function allSportsGetPath(path) {
+  const primaryKey = process.env.RAPIDAPI_KEY
+  const secondaryKey = process.env.ICEHOCKEY_API_KEY
+  const host = 'allsportsapi2.p.rapidapi.com'
+
+  if (primaryKey) {
+    const data = await rapidApiGet(host, path, primaryKey)
+    if (!isQuotaError(data)) return data
+    console.warn('[allsports] primary RAPIDAPI_KEY quota exceeded — trying ICEHOCKEY_API_KEY')
+  }
+  if (secondaryKey && secondaryKey !== primaryKey) {
+    const data = await rapidApiGet(host, path, secondaryKey)
+    if (!isQuotaError(data)) return data
+    console.warn('[allsports] secondary ICEHOCKEY_API_KEY also quota exceeded')
+  }
+  // Both keys exhausted — return empty so caller can try next source
+  return {}
+}
+
+// Legacy helper for basketball (uses old endpoint format)
+async function allSportsGet(sport, endpoint) {
   return allSportsGetPath(`/api/${sport}/${endpoint}`)
 }
 
-// IceHockeyApi helper — same RAPIDAPI_KEY, dedicated hockey host
-// Sofascore-mirrored structure, same as AllSportsApi2 but hockey-specific
+// IceHockeyApi helper — uses ICEHOCKEY_API_KEY (or fallback RAPIDAPI_KEY)
 function iceHockeyGet(path) {
-  const key = process.env.RAPIDAPI_KEY
+  const key = process.env.ICEHOCKEY_API_KEY || process.env.RAPIDAPI_KEY
   if (!key) return Promise.reject(new Error('No RAPIDAPI_KEY'))
   return new Promise((resolve, reject) => {
     const options = {
