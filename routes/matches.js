@@ -11,7 +11,7 @@ let basketballCache = { data: null, ts: 0 }
 let esportsCache = { data: null, ts: 0 }
 const UPCOMING_TTL = 15 * 60 * 1000
 const LIVE_TTL = 60 * 1000
-const HOCKEY_TTL = 30 * 60 * 1000   // 30 min — allow fresh data while debugging
+const HOCKEY_TTL = 3 * 60 * 60 * 1000   // 3 hours — preserve AllSportsApi2 daily quota
 const BASKETBALL_TTL = 6 * 60 * 60 * 1000
 const ESPORTS_TTL = 60 * 60 * 1000       // 1 hour
 
@@ -1021,35 +1021,27 @@ router.get('/hockey-cache-reset', (req, res) => {
   res.json({ ok: true, message: 'Hockey cache + season ID cache cleared — next /matches/hockey will re-fetch' })
 })
 
-// GET /matches/hockey-debug — full chain test: keys, season IDs, match counts
-router.get('/hockey-debug', async (req, res) => {
+// GET /matches/hockey-debug — status only, NO API calls (quota-safe)
+router.get('/hockey-debug', (req, res) => {
   const primaryKey   = process.env.RAPIDAPI_KEY    || null
   const secondaryKey = process.env.ICEHOCKEY_API_KEY || null
-  const result = {
+  res.json({
     ts: new Date().toISOString(),
+    cacheStatus: {
+      hockey: hockeyCache.data ? `${hockeyCache.data.length} games, age ${Math.round((Date.now() - hockeyCache.ts) / 60000)}min` : 'empty',
+      hockeyTTL: '3h',
+      seasonIdCache: [...seasonIdCache.entries()].map(([id, v]) => ({
+        tournamentId: id, seasonId: v.seasonId, ageMin: Math.round((Date.now() - v.ts) / 60000)
+      })),
+    },
     keys: {
       RAPIDAPI_KEY:      primaryKey   ? primaryKey.slice(0, 8) + '...' : 'NOT SET',
       ICEHOCKEY_API_KEY: secondaryKey ? secondaryKey.slice(0, 8) + '...' : 'NOT SET',
       sameKey: primaryKey === secondaryKey,
     },
-    tournaments: [],
-  }
-
-  // Test AllSportsApi2 quota status for both keys
-  const testPath = `/api/tournament/3/season/81043/matches/next/0`
-  for (const [label, key] of [['primary', primaryKey], ['secondary', secondaryKey]]) {
-    if (!key) { result[`allsports_${label}`] = 'KEY NOT SET'; continue }
-    try {
-      const data = await rapidApiGet('allsportsapi2.p.rapidapi.com', testPath, key)
-      const evts = data?.events?.length || 0
-      const msg  = data?.message || ''
-      result[`allsports_${label}`] = msg.includes('exceeded') ? `QUOTA_EXCEEDED: ${msg.slice(0,80)}` : `OK — ${evts} events`
-    } catch (e) {
-      result[`allsports_${label}`] = `ERROR: ${e.message}`
-    }
-  }
-
-  res.json(result)
+    hardcodedFallbacks: HOCKEY_TOURNAMENTS_BASE.map(t => ({ id: t.id, league: t.league, fallbackSeasonId: t.fallbackSeasonId })),
+    note: 'No API calls made — quota-safe. Quota resets at midnight UTC.',
+  })
 })
 
 // GET /matches/esports-debug — test PandaScore connection + inspect odds fields
