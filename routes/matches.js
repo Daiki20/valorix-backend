@@ -603,18 +603,37 @@ router.get('/hockey', async (req, res) => {
     console.log('[matches/hockey] RAPIDAPI_KEY not set — only NHL free API available')
   }
 
-  // ── Overlay real bookmaker odds from The Odds API ────────────────────────────
-  if (process.env.ODDS_API_KEY && games.length > 0) {
-    try {
-      const oddsMap = await fetchHockeyOdds()
+  // ── Overlay real bookmaker odds ────────────────────────────────────────────────
+  // Primary: API-Hockey (api-sports) — covers ИИХФ WC + KHL + NHL (100 req/day free)
+  // Fallback: The Odds API — NHL/KHL/SHL only (500 req/month)
+  if (games.length > 0) {
+    let oddsMap = {}
+
+    if (process.env.RAPIDAPI_KEY) {
+      try {
+        oddsMap = await fetchApiHockeyOdds()
+      } catch (err) {
+        console.warn('[matches/hockey] api-hockey odds failed:', err.message)
+      }
+    }
+
+    // Fallback to The Odds API if api-hockey returned nothing
+    if (!Object.keys(oddsMap).length && process.env.ODDS_API_KEY) {
+      try {
+        oddsMap = await fetchHockeyOdds()
+        console.log('[matches/hockey] using The Odds API as fallback')
+      } catch (err) {
+        console.warn('[matches/hockey] odds-api fallback failed:', err.message)
+      }
+    }
+
+    if (Object.keys(oddsMap).length) {
       let oddsOverlaid = 0
       for (const game of games) {
         const odds = lookupOdds(game.homeEn || game.home, game.awayEn || game.away, oddsMap)
         if (odds) { game.odds1x2 = odds; oddsOverlaid++ }
       }
       console.log(`[matches/hockey] overlaid odds on ${oddsOverlaid}/${games.length} matches`)
-    } catch (err) {
-      console.warn('[matches/hockey] odds overlay failed:', err.message)
     }
   }
 
@@ -877,6 +896,149 @@ async function fetchHockeyOdds() {
   hockeyOddsCache = { data: lookup, ts: Date.now() }
   console.log(`[odds-api/hockey] cached odds for ${Math.floor(Object.keys(lookup).length / 2)} matches`)
   return lookup
+}
+
+// ── API-Hockey (api-sports.io via RapidAPI) — real odds for ИИХФ WC + KHL + NHL ─
+// Subscribe FREE at https://rapidapi.com/api-sports/api/api-hockey (100 req/day)
+// Uses the SAME RAPIDAPI_KEY — just needs a separate free subscription on that API.
+function apiHockeyGet(path) {
+  const key = process.env.RAPIDAPI_KEY
+  if (!key) return Promise.reject(new Error('No RAPIDAPI_KEY'))
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api-hockey.p.rapidapi.com',
+      path,
+      method: 'GET',
+      timeout: 10000,
+      headers: {
+        'X-RapidAPI-Key': key,
+        'X-RapidAPI-Host': 'api-hockey.p.rapidapi.com',
+        'Accept': 'application/json',
+      },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          console.warn(`[api-hockey] ${path} → HTTP ${res.statusCode}: ${data.slice(0, 150)}`)
+          reject(new Error(`api-hockey HTTP ${res.statusCode}`)); return
+        }
+        try { resolve(JSON.parse(data)) }
+        catch { reject(new Error('JSON parse error')) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    req.end()
+  })
+}
+
+// Cache league IDs in process memory (they never change)
+let _apiHockeyLeagueIds = null
+
+async function getApiHockeyLeagueIds() {
+  if (_apiHockeyLeagueIds) return _apiHockeyLeagueIds
+
+  const HARDCODED = { iihfWC: 72, khl: 73, nhl: 57 }
+  try {
+    const data = await apiHockeyGet('/leagues')
+    const leagues = data?.response || []
+    if (!leagues.length) { _apiHockeyLeagueIds = HARDCODED; return HARDCODED }
+
+    const findId = (nameParts) =>
+      leagues.find(l => nameParts.some(p => l.name?.toLowerCase().includes(p)))?.id || null
+
+    const iihfWC = findId(['world championship', 'iihf world']) || HARDCODED.iihfWC
+    const khl    = findId(['khl', 'kontinental'])               || HARDCODED.khl
+    const nhl    = leagues.find(l => l.name === 'NHL')?.id      || HARDCODED.nhl
+
+    _apiHockeyLeagueIds = { iihfWC, khl, nhl }
+    console.log(`[api-hockey] league IDs discovered: IIHF=${iihfWC} KHL=${khl} NHL=${nhl}`)
+  } catch (err) {
+    console.warn('[api-hockey] league discovery failed, using hardcoded:', err.message)
+    _apiHockeyLeagueIds = HARDCODED
+  }
+  return _apiHockeyLeagueIds
+}
+
+// Parse API-Hockey /odds response → lookup map compatible with lookupOdds()
+function parseApiHockeyOddsResponse(items) {
+  const map = {}
+  for (const item of (items || [])) {
+    const home = item.game?.teams?.home?.name
+    const away = item.game?.teams?.away?.name
+    if (!home || !away) continue
+
+    const buckets = { home: [], away: [] }
+    for (const bm of (item.bookmakers || [])) {
+      // bet id=1 = "Match Winner", but also check by name for safety
+      const bet = bm.bets?.find(b =>
+        b.id === 1 || b.name?.toLowerCase().includes('match winner') || b.name?.toLowerCase() === 'winner'
+      )
+      if (!bet) continue
+      const hVal = bet.values?.find(v => v.value === 'Home')
+      const aVal = bet.values?.find(v => v.value === 'Away')
+      const h = parseFloat(hVal?.odd)
+      const a = parseFloat(aVal?.odd)
+      if (h > 1) buckets.home.push(h)
+      if (a > 1) buckets.away.push(a)
+    }
+    if (!buckets.home.length || !buckets.away.length) continue
+
+    const avg = arr => parseFloat((arr.reduce((s, v) => s + v, 0) / arr.length).toFixed(2))
+    const hOdds = avg(buckets.home)
+    const aOdds = avg(buckets.away)
+    const hN = _normOdds(home)
+    const aN = _normOdds(away)
+    if (!hN || !aN) continue
+
+    const entry = { homeOdds: hOdds, awayOdds: aOdds, homeNorm: hN, awayNorm: aN }
+    map[hN] = entry
+    map[aN] = entry
+  }
+  return map
+}
+
+let apiHockeyOddsCache = { data: null, ts: 0 }
+const API_HOCKEY_ODDS_TTL = 3 * 60 * 60 * 1000  // 3 hours
+
+async function fetchApiHockeyOdds() {
+  if (apiHockeyOddsCache.data && Date.now() - apiHockeyOddsCache.ts < API_HOCKEY_ODDS_TTL) {
+    return apiHockeyOddsCache.data
+  }
+  if (!process.env.RAPIDAPI_KEY) return {}
+
+  const leagueIds = await getApiHockeyLeagueIds()
+  const now = new Date()
+  const yr = now.getFullYear()
+  const mo = now.getMonth() + 1  // 1-12
+  // ИИХФ WC = current calendar year; KHL/NHL = season starting year
+  const wcYear  = yr
+  const klYear  = mo >= 9 ? yr : yr - 1  // KHL/NHL start in Sept/Oct
+
+  const targets = [
+    { id: leagueIds.iihfWC, season: wcYear,  label: 'IIHF WC' },
+    { id: leagueIds.khl,    season: klYear,  label: 'KHL' },
+    { id: leagueIds.nhl,    season: klYear,  label: 'NHL' },
+  ]
+
+  const merged = {}
+  for (const { id, season, label } of targets) {
+    try {
+      const data = await apiHockeyGet(`/odds?league=${id}&season=${season}&bet=1`)
+      const parsed = parseApiHockeyOddsResponse(data?.response || [])
+      const count = Math.floor(Object.keys(parsed).length / 2)
+      console.log(`[api-hockey/odds] ${label} (league=${id} season=${season}): ${count} matches`)
+      Object.assign(merged, parsed)
+    } catch (err) {
+      console.warn(`[api-hockey/odds] ${label} failed:`, err.message)
+    }
+  }
+
+  apiHockeyOddsCache = { data: merged, ts: Date.now() }
+  console.log(`[api-hockey/odds] cached odds for ${Math.floor(Object.keys(merged).length / 2)} total matches`)
+  return merged
 }
 
 // Fetch all available esports odds from The Odds API and cache result
@@ -1154,8 +1316,10 @@ router.get('/team-logo/:teamId', async (req, res) => {
 router.get('/hockey-cache-reset', (req, res) => {
   hockeyCache = { data: null, ts: 0 }
   hockeyOddsCache = { data: null, ts: 0 }
+  apiHockeyOddsCache = { data: null, ts: 0 }
+  _apiHockeyLeagueIds = null
   seasonIdCache.clear()
-  res.json({ ok: true, message: 'Hockey cache + season ID cache cleared — next /matches/hockey will re-fetch' })
+  res.json({ ok: true, message: 'Hockey cache + season ID cache + API-Hockey cache cleared' })
 })
 
 // GET /matches/hockey-debug — status only, NO API calls (quota-safe)
