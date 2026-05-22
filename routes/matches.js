@@ -1136,6 +1136,22 @@ async function fetchPinnacleHockeyOdds() {
     )
     const items = data?.events ?? data?.markets ?? data?.data ?? (Array.isArray(data) ? data : [])
     console.log(`[pinnacle/odds] all hockey prematch: ${items.length} raw events`)
+
+    // Debug: log which leagues are present in the response so we can verify coverage
+    if (items.length) {
+      const leagueCounts = {}
+      for (const item of items) {
+        const lid = item.league_id ?? item.leagueId ?? '?'
+        const lname = item.league_name ?? item.leagueName ?? item.league ?? String(lid)
+        const key = `${lname}(${lid})`
+        leagueCounts[key] = (leagueCounts[key] || 0) + 1
+      }
+      console.log('[pinnacle/odds] available leagues:', Object.entries(leagueCounts)
+        .map(([k, n]) => `${k}×${n}`).join(' | '))
+    } else {
+      console.log('[pinnacle/odds] no prematch events returned — all games may be live or Pinnacle quota exceeded')
+    }
+
     const parsed = parsePinnacleMarkets(items)
     Object.assign(merged, parsed)
   } catch (err) {
@@ -1157,10 +1173,16 @@ async function fetchPinnacleHockeyOdds() {
 }
 
 // ── Hockey odds (The Odds API) ────────────────────────────────────────────────
-// icehockey_nhl, icehockey_khl — icehockey_shl removed (returns 404 Unknown sport)
+// Sport keys to try — some may return 0 events or 404 when season is over (caught gracefully).
+// KHL returns 0 events May–Aug (off-season); IIHF key validated when WC is live.
 let hockeyOddsCache = { data: null, ts: 0 }
 const HOCKEY_ODDS_TTL = 6 * 60 * 60 * 1000   // 6 hours — conserves monthly quota
-const HOCKEY_ODDS_SPORTS = ['icehockey_nhl', 'icehockey_khl']
+const HOCKEY_ODDS_SPORTS = [
+  'icehockey_nhl',               // NHL — always needed (playoffs run Apr–Jun)
+  'icehockey_khl',               // KHL — off-season May–Aug, returns 0 events
+  'icehockey_world_championship', // IIHF WC — try this key first
+  'icehockey_iihf_worlds',        // IIHF WC alternative key (Odds API variant)
+]
 
 async function fetchHockeyOdds() {
   if (hockeyOddsCache.data && Date.now() - hockeyOddsCache.ts < HOCKEY_ODDS_TTL) {
@@ -1171,15 +1193,26 @@ async function fetchHockeyOdds() {
   for (const sport of HOCKEY_ODDS_SPORTS) {
     try {
       const events = await oddsApiGet(sport)
-      if (Array.isArray(events)) allEvents.push(...events)
-      console.log(`[odds-api/hockey] ${sport}: ${Array.isArray(events) ? events.length : 0} events`)
+      const count = Array.isArray(events) ? events.length : 0
+      if (count > 0) allEvents.push(...events)
+      // Only log non-zero or explicitly-failing sports to reduce noise
+      if (count > 0) console.log(`[odds-api/hockey] ${sport}: ${count} events`)
+      else           console.log(`[odds-api/hockey] ${sport}: 0 events (off-season or key not found)`)
     } catch (err) {
-      console.warn(`[odds-api/hockey] ${sport} failed: ${err.message}`)
+      // 404/422/unknown sport = key doesn't exist for this plan; skip silently
+      const isUnknown = err.message?.includes('404') || err.message?.includes('422')
+        || err.message?.includes('unknown sport') || err.message?.includes('Sport not available')
+      if (isUnknown) {
+        console.log(`[odds-api/hockey] ${sport}: key not found — ${err.message.slice(0, 80)}`)
+      } else {
+        console.warn(`[odds-api/hockey] ${sport} failed: ${err.message}`)
+      }
     }
   }
   const lookup = buildOddsLookup(allEvents)
+  const matchCount = Math.floor(Object.keys(lookup).length / 2)
   hockeyOddsCache = { data: lookup, ts: Date.now() }
-  console.log(`[odds-api/hockey] cached odds for ${Math.floor(Object.keys(lookup).length / 2)} matches`)
+  console.log(`[odds-api/hockey] cached odds for ${matchCount} matches total`)
   return lookup
 }
 
