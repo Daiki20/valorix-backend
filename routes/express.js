@@ -254,31 +254,6 @@ async function fetchHockeyMatchesForExpress(targetDate) {
   return matches
 }
 
-// PandaScore helper for express (no caching needed — called once per generation)
-function pandascoreGetExpress(path, params = {}) {
-  const token = process.env.PANDASCORE_TOKEN
-  if (!token) return Promise.reject(new Error('No PANDASCORE_TOKEN'))
-  const qs = new URLSearchParams(params).toString()
-  const fullPath = qs ? `${path}?${qs}` : path
-  return new Promise((resolve, reject) => {
-    const options = {
-      hostname: 'api.pandascore.co',
-      path: fullPath, method: 'GET', timeout: 10000,
-      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
-    }
-    const req = https.request(options, res => {
-      let data = ''
-      res.on('data', c => data += c)
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)) } catch { reject(new Error('parse error')) }
-      })
-    })
-    req.on('error', reject)
-    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
-    req.end()
-  })
-}
-
 // ── The Odds API — hockey coefficients for express ───────────────────────────
 function oddsApiGetHockey(sport) {
   const apiKey = process.env.ODDS_API_KEY
@@ -380,30 +355,6 @@ async function fetchHockeyOddsForExpress() {
   return lookup
 }
 
-const PS_GAME_SLUGS_EX = { cs2: 'cs-go', dota2: 'dota-2', valorant: 'valorant', lol: 'league-of-legends' }
-
-async function fetchEsportsMatchesForExpress(game) {
-  try {
-    const slug = PS_GAME_SLUGS_EX[game] || game
-    const data = await pandascoreGetExpress('/matches/upcoming', {
-      'filter[videogame_slug]': slug,
-      'page[size]': 10,
-      'sort': 'begin_at',
-    })
-    if (!Array.isArray(data)) return []
-    return data.slice(0, 6).map(m => {
-      const opp1 = m.opponents?.[0]?.opponent
-      const opp2 = m.opponents?.[1]?.opponent
-      if (!opp1?.name || !opp2?.name) return null
-      return {
-        home: opp1.name,
-        away: opp2.name,
-        league: m.serie?.full_name || m.tournament?.name || m.league?.name || game.toUpperCase(),
-      }
-    }).filter(Boolean)
-  } catch { return [] }
-}
-
 // Parse and validate GPT JSON response into express data
 function parseExpressJson(content, date) {
   const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
@@ -417,14 +368,11 @@ function parseExpressJson(content, date) {
   return data
 }
 
-const ESPORTS_SPORTS = new Set(['cs2', 'dota2', 'valorant', 'lol'])
-
 function buildSportExpressPrompt(sport, type, matches, date) {
   const isHigh = type === 'high'
-  const isEsports = ESPORTS_SPORTS.has(sport)
   const isHockey = sport === 'hockey'
   const hasRealOdds = isHockey && matches.some(m => m.odds)
-  const sportLabel = { hockey: 'хоккей', cs2: 'CS2', dota2: 'Dota 2', valorant: 'Valorant', lol: 'League of Legends' }[sport] || sport
+  const sportLabel = { hockey: 'хоккей' }[sport] || sport
 
   const oddsReq = isHigh
     ? `- Итоговый коэф ≥ 4.00, выбери 3-4 события
@@ -433,11 +381,7 @@ function buildSportExpressPrompt(sport, type, matches, date) {
 - Каждый коэф 1.30–2.20`
 
   let oddsNote
-  if (isEsports) {
-    oddsNote = `ВАЖНО: реальных букмекерских коэффициентов нет — оцени их сам на основе силы команд.
-Используй знания о командах: мировой рейтинг, последние результаты, форму.
-Коэффициенты должны быть реалистичными (1.30–3.00), не выдумывай экстремальные значения.`
-  } else if (isHockey && hasRealOdds) {
+  if (isHockey && hasRealOdds) {
     oddsNote = `РЕАЛЬНЫЕ КОЭФФИЦИЕНТЫ от букмекеров указаны в списке матчей выше.
 - Используй ТОЛЬКО реальные числа из списка — НЕ выдумывай коэффициенты
 - В поле "odds" ставь ТОЧНОЕ число из списка
@@ -448,9 +392,7 @@ function buildSportExpressPrompt(sport, type, matches, date) {
     oddsNote = `Коэффициенты оцени реалистично на основе силы команд, как у топ-букмекеров.`
   }
 
-  const predNote = isEsports
-    ? `"prediction" — победитель матча (Победа ${matches[0]?.home || 'команды 1'} / Победа ${matches[0]?.away || 'команды 2'})`
-    : isHockey
+  const predNote = isHockey
     ? `"prediction" — конкретная ставка (Победа хозяев / П1 / ТБ 5.5 / Фора (-1.5) / ОТ+буллиты)`
     : `"prediction" — конкретная ставка (Победа хозяев / П1 / ТБ 2.5 / Фора (-1.5))`
 
@@ -487,26 +429,20 @@ ${hasRealOdds ? '- ЗАПРЕЩЕНО выдумывать коэффициен�
 async function generateSportExpress(sport, type, targetDate) {
   let matches = []
 
-  if (sport === 'hockey') {
-    // Try targetDate, then next 3 days
-    for (let i = 0; i <= 3; i++) {
-      const d = new Date(targetDate); d.setDate(d.getDate() + i)
-      const dateStr = d.toISOString().slice(0, 10)
-      matches = await fetchHockeyMatchesForExpress(dateStr)
-      if (matches.length >= 2) { targetDate = dateStr; break }
-    }
-    if (matches.length < 2) throw new Error('Нет хоккейных матчей в ближайшие дни')
-
-    // Overlay real bookmaker odds from The Odds API
-    const oddsMap = await fetchHockeyOddsForExpress().catch(() => ({}))
-    matches = matches.map(m => ({ ...m, odds: lookupHockeyOdds(m.home, m.away, oddsMap) }))
-    const withOdds = matches.filter(m => m.odds).length
-    console.log(`[express/hockey] ${matches.length} matches, ${withOdds} with real odds`)
-  } else {
-    // Esports — upcoming matches (no real odds available)
-    matches = await fetchEsportsMatchesForExpress(sport)
-    if (matches.length < 2) throw new Error(`Нет матчей по ${sport} на PandaScore`)
+  // Try targetDate, then next 3 days
+  for (let i = 0; i <= 3; i++) {
+    const d = new Date(targetDate); d.setDate(d.getDate() + i)
+    const dateStr = d.toISOString().slice(0, 10)
+    matches = await fetchHockeyMatchesForExpress(dateStr)
+    if (matches.length >= 2) { targetDate = dateStr; break }
   }
+  if (matches.length < 2) throw new Error('Нет хоккейных матчей в ближайшие дни')
+
+  // Overlay real bookmaker odds from The Odds API
+  const oddsMap = await fetchHockeyOddsForExpress().catch(() => ({}))
+  matches = matches.map(m => ({ ...m, odds: lookupHockeyOdds(m.home, m.away, oddsMap) }))
+  const withOdds = matches.filter(m => m.odds).length
+  console.log(`[express/hockey] ${matches.length} matches, ${withOdds} with real odds`)
 
   const prompt = buildSportExpressPrompt(sport, type, matches.slice(0, 6), targetDate)
   const content = await openAIRequest([

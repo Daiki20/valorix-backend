@@ -9,12 +9,10 @@ let upcomingCache = { data: null, ts: 0 }
 let liveCache = { data: null, ts: 0 }
 let hockeyCache = { data: null, ts: 0 }
 let basketballCache = { data: null, ts: 0 }
-let esportsCache = { data: null, ts: 0 }
 const UPCOMING_TTL = 15 * 60 * 1000
 const LIVE_TTL = 60 * 1000
 const HOCKEY_TTL = 3 * 60 * 60 * 1000   // 3 hours — preserve AllSportsApi2 daily quota
 const BASKETBALL_TTL = 6 * 60 * 60 * 1000
-const ESPORTS_TTL = 60 * 60 * 1000       // 1 hour
 
 function sstatsGet(path, params = {}) {
   return new Promise((resolve, reject) => {
@@ -780,12 +778,8 @@ router.get('/basketball', async (req, res) => {
   res.json({ data: games })
 })
 
-// ── The Odds API (the-odds-api.com) — esports h2h coefficients ───────────────
+// ── The Odds API (the-odds-api.com) ──────────────────────────────────────────
 // Free: 500 req/month.  Register at https://the-odds-api.com → add ODDS_API_KEY to Railway.
-// Covered esports sports: esports_csgo, esports_lol (dota2 not on free-tier list).
-let esportsOddsCache = { data: null, ts: 0 }
-const ESPORTS_ODDS_TTL = 4 * 60 * 60 * 1000   // 4 hours — conserves monthly quota
-
 function oddsApiGet(sport) {
   const apiKey = process.env.ODDS_API_KEY
   if (!apiKey) return Promise.reject(new Error('No ODDS_API_KEY'))
@@ -1350,202 +1344,6 @@ async function fetchApiHockeyOdds() {
   return merged
 }
 
-// Fetch all available esports odds from The Odds API and cache result
-async function fetchEsportsOdds() {
-  if (esportsOddsCache.data && Date.now() - esportsOddsCache.ts < ESPORTS_ODDS_TTL) {
-    return esportsOddsCache.data
-  }
-  if (!process.env.ODDS_API_KEY) return {}
-
-  const ODDS_SPORTS = ['esports_csgo', 'esports_lol']
-  const allEvents = []
-  for (const sport of ODDS_SPORTS) {
-    try {
-      const events = await oddsApiGet(sport)
-      if (Array.isArray(events)) allEvents.push(...events)
-      console.log(`[odds-api] ${sport}: ${Array.isArray(events) ? events.length : 0} events`)
-    } catch (err) {
-      console.warn(`[odds-api] ${sport} failed: ${err.message}`)
-    }
-  }
-
-  const lookup = buildOddsLookup(allEvents)
-  esportsOddsCache = { data: lookup, ts: Date.now() }
-  console.log(`[odds-api] cached odds for ${Object.keys(lookup).length / 2} matches`)
-  return lookup
-}
-
-// ── Esports — PandaScore (pandascore.co) ─────────────────────────────────────
-// Free tier: 1000 req/hour. Token from pandascore.co (free registration).
-// Add PANDASCORE_TOKEN to Railway Variables to enable the match list.
-function pandascoreGet(path, params = {}) {
-  const token = process.env.PANDASCORE_TOKEN
-  if (!token) return Promise.reject(new Error('No PANDASCORE_TOKEN'))
-  const qs = new URLSearchParams(params).toString()
-  const fullPath = qs ? `${path}?${qs}` : path
-  return new Promise((resolve, reject) => {
-    const options = {
-      hostname: 'api.pandascore.co',
-      path: fullPath,
-      method: 'GET',
-      timeout: 10000,
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/json',
-      },
-    }
-    const req = https.request(options, res => {
-      let data = ''
-      res.on('data', c => data += c)
-      res.on('end', () => {
-        if (res.statusCode !== 200) {
-          console.error(`[pandascore] ${path} → HTTP ${res.statusCode}: ${data.slice(0, 200)}`)
-          reject(new Error(`pandascore HTTP ${res.statusCode}`))
-          return
-        }
-        try { resolve(JSON.parse(data)) }
-        catch { reject(new Error('JSON parse error')) }
-      })
-    })
-    req.on('error', reject)
-    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
-    req.end()
-  })
-}
-
-// PandaScore videogame slug → frontend game key
-const PS_GAME_MAP = {
-  'cs-go': 'cs2', 'csgo': 'cs2',
-  'dota-2': 'dota2', 'dota2': 'dota2',
-  'valorant': 'valorant',
-  'league-of-legends': 'lol', 'lol': 'lol',
-}
-const PS_TARGET_GAMES = new Set(['cs2', 'dota2', 'valorant', 'lol'])
-
-// game key → display name
-const ESPORTS_GAME_DISPLAY = { cs2: 'CS2', dota2: 'Dota 2', valorant: 'Valorant', lol: 'LoL' }
-
-// Normalize PandaScore match object to our format
-function normalizeEsportsMatch(m) {
-  const opp1 = m.opponents?.[0]?.opponent
-  const opp2 = m.opponents?.[1]?.opponent
-  const team1 = opp1?.name || ''
-  const team2 = opp2?.name || ''
-  if (!team1 || !team2) return null
-
-  const gameSlug = m.videogame?.slug || ''
-  const gameFrontend = PS_GAME_MAP[gameSlug] || gameSlug
-  if (!PS_TARGET_GAMES.has(gameFrontend)) return null
-
-  const gameDisplay = ESPORTS_GAME_DISPLAY[gameFrontend] || gameFrontend.toUpperCase()
-  const tournamentName = m.serie?.full_name || m.tournament?.name || m.league?.name || ''
-
-  const isLive = m.status === 'running'
-  let score = null
-  if (isLive && m.results?.length >= 2) {
-    score = `${m.results[0]?.score ?? 0}:${m.results[1]?.score ?? 0}`
-  }
-
-  // Team logos from PandaScore CDN
-  const homeImg = opp1?.image_url || null
-  const awayImg = opp2?.image_url || null
-
-  // Odds — PandaScore returns winner odds in some match objects
-  // Format: m.winner_odds = [{winner: {name}, value: 1.45}, ...]
-  let odds1x2 = null
-  const wonOdds = m.winner_odds || m.odds || null
-  if (Array.isArray(wonOdds) && wonOdds.length >= 2) {
-    const o1 = wonOdds.find(o => o.winner?.name === team1 || o.team?.name === team1)
-    const o2 = wonOdds.find(o => o.winner?.name === team2 || o.team?.name === team2)
-    if (o1?.value && o2?.value) {
-      odds1x2 = { home: o1.value, away: o2.value, draw: null }
-    }
-  }
-
-  return {
-    id: `ps_${m.id}`,
-    home: team1,
-    away: team2,
-    homeImg,
-    awayImg,
-    league: tournamentName ? `${gameDisplay} · ${tournamentName}` : gameDisplay,
-    game: gameFrontend,
-    sport: 'esports',
-    date: m.scheduled_at ? formatHockeyDate(m.scheduled_at) : '',
-    rawDate: m.scheduled_at || new Date().toISOString(),
-    isLive,
-    score,
-    odds1x2,
-  }
-}
-
-// GET /matches/esports — PandaScore + The Odds API, cached 1 hour
-router.get('/esports', async (req, res) => {
-  if (esportsCache.data && Date.now() - esportsCache.ts < ESPORTS_TTL) {
-    return res.json({ data: esportsCache.data, cached: true })
-  }
-
-  if (!process.env.PANDASCORE_TOKEN) {
-    console.log('[matches/esports] PANDASCORE_TOKEN not set — skipping')
-    return res.json({ data: [], hint: 'Set PANDASCORE_TOKEN in Railway Variables (free at pandascore.co)' })
-  }
-
-  const games = []
-
-  try {
-    // Fetch PandaScore matches + The Odds API odds in parallel
-    const [runningRes, upcomingRes, oddsMap] = await Promise.all([
-      pandascoreGet('/matches/running', {
-        'page[size]': 30,
-        sort: 'begin_at',
-        with_odds: true,
-      }).catch(err => { console.error('[matches/esports] running:', err.message); return [] }),
-      pandascoreGet('/matches/upcoming', {
-        'page[size]': 100,
-        sort: 'begin_at',
-        with_odds: true,
-      }).catch(err => { console.error('[matches/esports] upcoming:', err.message); return [] }),
-      fetchEsportsOdds().catch(() => {}),
-    ])
-
-    const running  = Array.isArray(runningRes)  ? runningRes  : []
-    const upcoming = Array.isArray(upcomingRes) ? upcomingRes : []
-    console.log(`[matches/esports] PandaScore: ${running.length} running + ${upcoming.length} upcoming, oddsEntries=${Object.keys(oddsMap || {}).length}`)
-
-    for (const m of [...running, ...upcoming]) {
-      const normalized = normalizeEsportsMatch(m)
-      if (!normalized) continue
-      if (games.some(g => g.home === normalized.home && g.away === normalized.away)) continue
-
-      // Overlay odds from The Odds API if PandaScore didn't provide them
-      if (!normalized.odds1x2 && oddsMap) {
-        normalized.odds1x2 = lookupOdds(normalized.home, normalized.away, oddsMap)
-      }
-
-      games.push(normalized)
-    }
-  } catch (err) {
-    console.error('[matches/esports] error:', err.message)
-  }
-
-  games.sort((a, b) => {
-    if (a.isLive && !b.isLive) return -1
-    if (!a.isLive && b.isLive) return 1
-    return new Date(a.rawDate || 0) - new Date(b.rawDate || 0)
-  })
-
-  const oddsCount = games.filter(g => g.odds1x2).length
-  console.log(`[matches/esports] total ${games.length} matches (${games.filter(g => g.isLive).length} live, ${oddsCount} with odds)`)
-
-  if (games.length > 0) {
-    esportsCache = { data: games, ts: Date.now() }
-  } else {
-    esportsCache = { data: [], ts: Date.now() - (ESPORTS_TTL - 15 * 60 * 1000) }
-  }
-
-  res.json({ data: games })
-})
-
 // GET /matches/team-logo/:teamId — proxy team image via AllSportsApi2 (PRO key, no Sofascore block)
 // Cached 24h on client + 6h on server — logos rarely change
 const logoCache = new Map()  // teamId → { buf, type, ts }
@@ -1655,33 +1453,6 @@ router.get('/hockey-debug', (req, res) => {
     hardcodedFallbacks: HOCKEY_TOURNAMENTS_BASE.map(t => ({ id: t.id, league: t.league, fallbackSeasonId: t.fallbackSeasonId })),
     note: 'No API calls made — quota-safe. Quota resets at midnight UTC.',
   })
-})
-
-// GET /matches/esports-debug — test PandaScore connection + inspect odds fields
-router.get('/esports-debug', async (req, res) => {
-  if (!process.env.PANDASCORE_TOKEN) return res.json({ error: 'PANDASCORE_TOKEN not set' })
-  try {
-    const data = await pandascoreGet('/matches/upcoming', { 'page[size]': 3, sort: 'begin_at', with_odds: true })
-    const matches = Array.isArray(data) ? data : []
-    res.json({
-      ok: true,
-      count: matches.length,
-      sample: matches.slice(0, 2).map(m => ({
-        id: m.id,
-        name: m.name,
-        game: m.videogame?.slug,
-        opp1: m.opponents?.[0]?.opponent?.name,
-        opp2: m.opponents?.[1]?.opponent?.name,
-        // Inspect all odds-related fields
-        winner_odds: m.winner_odds,
-        odds: m.odds,
-        draw: m.draw,
-        allKeys: Object.keys(m),
-      }))
-    })
-  } catch (e) {
-    res.json({ error: e.message })
-  }
 })
 
 module.exports = router
