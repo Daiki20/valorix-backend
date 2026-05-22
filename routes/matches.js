@@ -923,21 +923,9 @@ let _pinnacleLeagueIds = null   // { iihfWC, khl, nhl }
 
 async function getPinnacleHockeySportId() {
   if (_pinnacleSportId) return _pinnacleSportId
-
-  try {
-    const data = await pinnacleGet('/kit/v1/sports?is_have_odds=true')
-    const sports = data?.sports || data?.data || data || []
-    // Find ice hockey — look for "ice hockey" / "hockey" in name
-    const hock = sports.find(s =>
-      /ice\s*hockey/i.test(s.name || s.sport_name || '') ||
-      (s.name || '').toLowerCase() === 'hockey'
-    )
-    _pinnacleSportId = hock?.id ?? hock?.sport_id ?? 19  // 19 = Pinnacle's standard ice hockey id
-    console.log(`[pinnacle] hockey sport_id=${_pinnacleSportId}`)
-  } catch (err) {
-    console.warn('[pinnacle] sport discovery failed, using default 19:', err.message)
-    _pinnacleSportId = 19
-  }
+  // sport_id=5 = Ice Hockey in pinnacle-betting-odds.p.rapidapi.com wrapper
+  // (confirmed from their playground default value — NOT Pinnacle's standard 19)
+  _pinnacleSportId = 5
   return _pinnacleSportId
 }
 
@@ -949,12 +937,17 @@ async function getPinnacleHockeyLeagueIds() {
 
   try {
     const data = await pinnacleGet(`/kit/v1/leagues?sport_id=${sportId}&is_have_odds=true`)
-    const leagues = data?.leagues || data?.data || data || []
-    if (!leagues.length) { _pinnacleLeagueIds = FALLBACK; return FALLBACK }
+    // Log raw structure for one-time debug
+    console.log('[pinnacle] leagues raw keys:', Object.keys(data || {}).join(', '))
+    const leagues = data?.leagues || data?.data || (Array.isArray(data) ? data : [])
+    if (!leagues.length) {
+      console.log('[pinnacle] leagues: empty response — raw:', JSON.stringify(data).slice(0, 300))
+      _pinnacleLeagueIds = FALLBACK; return FALLBACK
+    }
 
     // Log ALL hockey leagues once for debugging
-    console.log('[pinnacle] hockey leagues:', leagues.slice(0, 20).map(l =>
-      `${l.id ?? l.league_id}: ${l.name ?? l.league_name}`).join(', '))
+    console.log('[pinnacle] hockey leagues:', leagues.slice(0, 30).map(l =>
+      `${l.id ?? l.league_id}: ${l.name ?? l.league_name}`).join(' | '))
 
     const find = (...parts) => {
       const l = leagues.find(lg => {
