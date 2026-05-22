@@ -960,7 +960,8 @@ router.get('/hockey-debug', async (req, res) => {
     let seasonId = null
     try {
       const data = await iceHockeyGet(`/api/tournament/${t.id}/seasons`)
-      const seasons = (data?.seasons || []).sort((a, b) =>
+      entry.iceHockeyRaw = JSON.stringify(data).slice(0, 600)  // raw response preview
+      const seasons = (data?.seasons || data?.uniqueTournamentSeasons || []).sort((a, b) =>
         (Number(b.year) || 0) - (Number(a.year) || 0) || (Number(b.id) || 0) - (Number(a.id) || 0)
       )
       entry.iceHockeySeasons = seasons.slice(0, 3).map(s => ({ id: s.id, year: s.year, name: s.name }))
@@ -971,7 +972,8 @@ router.get('/hockey-debug', async (req, res) => {
     if (!seasonId) {
       try {
         const data = await allSportsGetPath(`/api/tournament/${t.id}/seasons`)
-        const seasons = (data?.seasons || []).sort((a, b) =>
+        entry.allSportsRaw = JSON.stringify(data).slice(0, 600)  // raw response preview
+        const seasons = (data?.seasons || data?.uniqueTournamentSeasons || []).sort((a, b) =>
           (Number(b.year) || 0) - (Number(a.year) || 0) || (Number(b.id) || 0) - (Number(a.id) || 0)
         )
         entry.allSportsSeasons = seasons.slice(0, 3).map(s => ({ id: s.id, year: s.year, name: s.name }))
