@@ -604,24 +604,34 @@ router.get('/hockey', async (req, res) => {
   }
 
   // ── Overlay real bookmaker odds ────────────────────────────────────────────────
-  // Primary: API-Hockey (api-sports) — covers ИИХФ WC + KHL + NHL (100 req/day free)
-  // Fallback: The Odds API — NHL/KHL/SHL only (500 req/month)
+  // Priority: Pinnacle → API-Hockey → The Odds API (fallback)
   if (games.length > 0) {
     let oddsMap = {}
 
+    // 1. Pinnacle Betting Odds — covers ИИХФ WC + KHL + NHL, sharp real odds
     if (process.env.RAPIDAPI_KEY) {
       try {
-        oddsMap = await fetchApiHockeyOdds()
+        oddsMap = await fetchPinnacleHockeyOdds()
       } catch (err) {
-        console.warn('[matches/hockey] api-hockey odds failed:', err.message)
+        console.warn('[matches/hockey] pinnacle odds failed:', err.message)
       }
     }
 
-    // Fallback to The Odds API if api-hockey returned nothing
+    // 2. API-Hockey (api-sports) — fallback if Pinnacle returned nothing
+    if (!Object.keys(oddsMap).length && process.env.RAPIDAPI_KEY) {
+      try {
+        oddsMap = await fetchApiHockeyOdds()
+        if (Object.keys(oddsMap).length) console.log('[matches/hockey] using API-Hockey as fallback')
+      } catch (err) {
+        console.warn('[matches/hockey] api-hockey fallback failed:', err.message)
+      }
+    }
+
+    // 3. The Odds API — last resort (NHL/KHL/SHL only)
     if (!Object.keys(oddsMap).length && process.env.ODDS_API_KEY) {
       try {
         oddsMap = await fetchHockeyOdds()
-        console.log('[matches/hockey] using The Odds API as fallback')
+        if (Object.keys(oddsMap).length) console.log('[matches/hockey] using The Odds API as last resort')
       } catch (err) {
         console.warn('[matches/hockey] odds-api fallback failed:', err.message)
       }
@@ -869,6 +879,196 @@ function lookupOdds(psHome, psAway, oddsMap) {
     away: isHomeSide ? entry.awayOdds : entry.homeOdds,
     draw: null,
   }
+}
+
+// ── Pinnacle Betting Odds (pinnacle-betting-odds.p.rapidapi.com) ─────────────
+// Free: 550 req/month. Subscribe at https://rapidapi.com/tipsters/api/pinnacle-betting-odds
+// Uses same RAPIDAPI_KEY. Covers IIHF WC + KHL + NHL (all Pinnacle markets).
+function pinnacleGet(path) {
+  const key = process.env.RAPIDAPI_KEY
+  if (!key) return Promise.reject(new Error('No RAPIDAPI_KEY'))
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'pinnacle-betting-odds.p.rapidapi.com',
+      path,
+      method: 'GET',
+      timeout: 12000,
+      headers: {
+        'X-RapidAPI-Key': key,
+        'X-RapidAPI-Host': 'pinnacle-betting-odds.p.rapidapi.com',
+        'Accept': 'application/json',
+      },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          console.warn(`[pinnacle] ${path} → HTTP ${res.statusCode}: ${data.slice(0, 200)}`)
+          reject(new Error(`pinnacle HTTP ${res.statusCode}`)); return
+        }
+        try { resolve(JSON.parse(data)) }
+        catch { reject(new Error('JSON parse error')) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    req.end()
+  })
+}
+
+// Cache sport/league IDs (never change, fetch once per process start)
+let _pinnacleSportId   = null   // ice hockey sport_id
+let _pinnacleLeagueIds = null   // { iihfWC, khl, nhl }
+
+async function getPinnacleHockeySportId() {
+  if (_pinnacleSportId) return _pinnacleSportId
+
+  try {
+    const data = await pinnacleGet('/kit/v1/sports?is_have_odds=true')
+    const sports = data?.sports || data?.data || data || []
+    // Find ice hockey — look for "ice hockey" / "hockey" in name
+    const hock = sports.find(s =>
+      /ice\s*hockey/i.test(s.name || s.sport_name || '') ||
+      (s.name || '').toLowerCase() === 'hockey'
+    )
+    _pinnacleSportId = hock?.id ?? hock?.sport_id ?? 19  // 19 = Pinnacle's standard ice hockey id
+    console.log(`[pinnacle] hockey sport_id=${_pinnacleSportId}`)
+  } catch (err) {
+    console.warn('[pinnacle] sport discovery failed, using default 19:', err.message)
+    _pinnacleSportId = 19
+  }
+  return _pinnacleSportId
+}
+
+async function getPinnacleHockeyLeagueIds() {
+  if (_pinnacleLeagueIds) return _pinnacleLeagueIds
+
+  const sportId = await getPinnacleHockeySportId()
+  const FALLBACK = { iihfWC: null, khl: null, nhl: null }
+
+  try {
+    const data = await pinnacleGet(`/kit/v1/leagues?sport_id=${sportId}&is_have_odds=true`)
+    const leagues = data?.leagues || data?.data || data || []
+    if (!leagues.length) { _pinnacleLeagueIds = FALLBACK; return FALLBACK }
+
+    // Log ALL hockey leagues once for debugging
+    console.log('[pinnacle] hockey leagues:', leagues.slice(0, 20).map(l =>
+      `${l.id ?? l.league_id}: ${l.name ?? l.league_name}`).join(', '))
+
+    const find = (...parts) => {
+      const l = leagues.find(lg => {
+        const n = (lg.name || lg.league_name || '').toLowerCase()
+        return parts.some(p => n.includes(p.toLowerCase()))
+      })
+      return l?.id ?? l?.league_id ?? null
+    }
+
+    _pinnacleLeagueIds = {
+      iihfWC: find('world championship', 'iihf', 'world champ'),
+      khl:    find('khl', 'kontinental'),
+      nhl:    find('nhl') ?? find('national hockey league'),
+    }
+    console.log(`[pinnacle] league IDs: IIHF=${_pinnacleLeagueIds.iihfWC} KHL=${_pinnacleLeagueIds.khl} NHL=${_pinnacleLeagueIds.nhl}`)
+  } catch (err) {
+    console.warn('[pinnacle] league discovery failed:', err.message)
+    _pinnacleLeagueIds = FALLBACK
+  }
+  return _pinnacleLeagueIds
+}
+
+// Parse Pinnacle /kit/v1/markets response → lookup map
+function parsePinnacleMarkets(items) {
+  const map = {}
+  for (const item of (Array.isArray(items) ? items : [])) {
+    // Multiple possible response shapes from the API wrapper
+    const home = item.home ?? item.home_team ?? item.teams?.home?.name ?? item.homeTeam
+    const away = item.away ?? item.away_team ?? item.teams?.away?.name ?? item.awayTeam
+    if (!home || !away) continue
+
+    // Extract moneyline odds — try every known path
+    let hOdds = null, aOdds = null
+    const ml = item.money_line ?? item.moneyline ?? item.periods?.num_0?.money_line
+           ?? item.odds?.moneyline ?? item.markets?.moneyline
+    if (ml) {
+      hOdds = parseFloat(ml.home ?? ml.homeOdds ?? ml[home])
+      aOdds = parseFloat(ml.away ?? ml.awayOdds ?? ml[away])
+    }
+    // Also try direct home/away odds on the item
+    if (!hOdds) hOdds = parseFloat(item.homeOdds ?? item.home_odds)
+    if (!aOdds) aOdds = parseFloat(item.awayOdds ?? item.away_odds)
+
+    if (!hOdds || !aOdds || hOdds < 1 || aOdds < 1) continue
+
+    const hN = _normOdds(home)
+    const aN = _normOdds(away)
+    if (!hN || !aN) continue
+
+    const entry = { homeOdds: hOdds, awayOdds: aOdds, homeNorm: hN, awayNorm: aN }
+    map[hN] = entry
+    map[aN] = entry
+  }
+  return map
+}
+
+let pinnacleOddsCache = { data: null, ts: 0 }
+const PINNACLE_ODDS_TTL = 6 * 60 * 60 * 1000  // 6 hours → ~120 req/month (well within 550 free limit)
+
+async function fetchPinnacleHockeyOdds() {
+  if (pinnacleOddsCache.data && Date.now() - pinnacleOddsCache.ts < PINNACLE_ODDS_TTL) {
+    return pinnacleOddsCache.data
+  }
+  if (!process.env.RAPIDAPI_KEY) return {}
+
+  const sportId    = await getPinnacleHockeySportId()
+  const leagueIds  = await getPinnacleHockeyLeagueIds()
+
+  const merged = {}
+  const leaguesToFetch = [
+    { id: leagueIds.iihfWC, label: 'IIHF WC' },
+    { id: leagueIds.khl,    label: 'KHL' },
+    { id: leagueIds.nhl,    label: 'NHL' },
+  ].filter(l => l.id)   // skip leagues we couldn't discover
+
+  // If league discovery failed, try fetching ALL hockey markets at once
+  if (!leaguesToFetch.length) {
+    try {
+      const data = await pinnacleGet(
+        `/kit/v1/markets?sport_id=${sportId}&is_have_odds=true&event_type=prematch`
+      )
+      const items = data?.markets ?? data?.data ?? data ?? []
+      console.log(`[pinnacle] raw response keys: ${Object.keys(data || {}).join(', ')}`)
+      console.log(`[pinnacle] all hockey: ${items.length} events, first item keys: ${Object.keys(items[0] || {}).join(', ')}`)
+      const parsed = parsePinnacleMarkets(items)
+      const count = Math.floor(Object.keys(parsed).length / 2)
+      console.log(`[pinnacle/odds] all hockey: ${count} matches`)
+      Object.assign(merged, parsed)
+    } catch (err) {
+      console.warn('[pinnacle/odds] all-hockey fetch failed:', err.message)
+    }
+  } else {
+    for (const { id, label } of leaguesToFetch) {
+      try {
+        const qs = `/kit/v1/markets?sport_id=${sportId}&league_id=${id}&is_have_odds=true&event_type=prematch`
+        const data = await pinnacleGet(qs)
+        const items = data?.markets ?? data?.data ?? data ?? []
+        const parsed = parsePinnacleMarkets(items)
+        const count = Math.floor(Object.keys(parsed).length / 2)
+        console.log(`[pinnacle/odds] ${label} (league=${id}): ${count} matches`)
+        Object.assign(merged, parsed)
+      } catch (err) {
+        console.warn(`[pinnacle/odds] ${label} failed:`, err.message)
+      }
+    }
+  }
+
+  // Log first match for format debugging
+  const keys = Object.keys(merged)
+  if (keys.length) console.log(`[pinnacle/odds] sample: ${keys[0]} → ${JSON.stringify(merged[keys[0]])}`)
+
+  pinnacleOddsCache = { data: merged, ts: Date.now() }
+  console.log(`[pinnacle/odds] cached ${Math.floor(keys.length / 2)} total matches`)
+  return merged
 }
 
 // ── Hockey odds (The Odds API) ────────────────────────────────────────────────
@@ -1317,9 +1517,12 @@ router.get('/hockey-cache-reset', (req, res) => {
   hockeyCache = { data: null, ts: 0 }
   hockeyOddsCache = { data: null, ts: 0 }
   apiHockeyOddsCache = { data: null, ts: 0 }
+  pinnacleOddsCache = { data: null, ts: 0 }
   _apiHockeyLeagueIds = null
+  _pinnacleSportId = null
+  _pinnacleLeagueIds = null
   seasonIdCache.clear()
-  res.json({ ok: true, message: 'Hockey cache + season ID cache + API-Hockey cache cleared' })
+  res.json({ ok: true, message: 'All hockey caches cleared (matches + Pinnacle + API-Hockey + season IDs)' })
 })
 
 // GET /matches/hockey-debug — status only, NO API calls (quota-safe)
