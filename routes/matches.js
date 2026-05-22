@@ -132,6 +132,36 @@ function allSportsGet(sport, endpoint) {
   return allSportsGetPath(`/api/${sport}/${endpoint}`)
 }
 
+// IceHockeyApi helper — same RAPIDAPI_KEY, dedicated hockey host
+// Sofascore-mirrored structure, same as AllSportsApi2 but hockey-specific
+function iceHockeyGet(path) {
+  const key = process.env.RAPIDAPI_KEY
+  if (!key) return Promise.reject(new Error('No RAPIDAPI_KEY'))
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'icehockeyapi.p.rapidapi.com',
+      path,
+      method: 'GET',
+      timeout: 8000,
+      headers: {
+        'X-RapidAPI-Key': key,
+        'X-RapidAPI-Host': 'icehockeyapi.p.rapidapi.com',
+        'Accept': 'application/json',
+      },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)) } catch { reject(new Error('JSON parse error')) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    req.end()
+  })
+}
+
 // ── Hockey tournament config ──────────────────────────────────────────────────
 // IDs match Sofascore / AllSportsApi.  Season IDs valid for 2025-26 season.
 // Update seasonId each September when the new season starts.
@@ -387,6 +417,21 @@ router.get('/hockey', async (req, res) => {
     console.log('[matches/hockey] RAPIDAPI_KEY not set — only NHL free API available')
   }
 
+  // ── Overlay real bookmaker odds from The Odds API ────────────────────────────
+  if (process.env.ODDS_API_KEY && games.length > 0) {
+    try {
+      const oddsMap = await fetchHockeyOdds()
+      let oddsOverlaid = 0
+      for (const game of games) {
+        const odds = lookupOdds(game.home, game.away, oddsMap)
+        if (odds) { game.odds1x2 = odds; oddsOverlaid++ }
+      }
+      console.log(`[matches/hockey] overlaid odds on ${oddsOverlaid}/${games.length} matches`)
+    } catch (err) {
+      console.warn('[matches/hockey] odds overlay failed:', err.message)
+    }
+  }
+
   games.sort((a, b) => {
     if (a.isLive && !b.isLive) return -1
     if (!a.isLive && b.isLive) return 1
@@ -438,6 +483,19 @@ router.get('/hockey-stats', async (req, res) => {
     homeForm: homeRes?.events || [],
     awayForm: awayRes?.events || [],
     standings: standingsRes?.standings || [],
+    homeSeasonStats: null,
+    awaySeasonStats: null,
+  }
+
+  // ── IceHockeyApi: season stats (PP%, PK%, goals per game, shots) ─────────────
+  if (process.env.RAPIDAPI_KEY && seasonId) {
+    const [homeStatsRes, awayStatsRes] = await Promise.all([
+      iceHockeyGet(`/api/hockey/team/${homeId}/statistics/season/${seasonId}`).catch(() => null),
+      iceHockeyGet(`/api/hockey/team/${awayId}/statistics/season/${seasonId}`).catch(() => null),
+    ])
+    if (homeStatsRes?.statistics) data.homeSeasonStats = homeStatsRes.statistics
+    if (awayStatsRes?.statistics) data.awaySeasonStats = awayStatsRes.statistics
+    console.log(`[matches/hockey-stats] season stats: home=${!!data.homeSeasonStats} away=${!!data.awaySeasonStats}`)
   }
 
   hockeyStatsCache.set(cacheKey, { data, ts: Date.now() })
@@ -604,6 +662,33 @@ function lookupOdds(psHome, psAway, oddsMap) {
     away: isHomeSide ? entry.awayOdds : entry.homeOdds,
     draw: null,
   }
+}
+
+// ── Hockey odds (The Odds API) ────────────────────────────────────────────────
+// icehockey_nhl, icehockey_khl, icehockey_shl — all covered by free 500 req/month plan
+let hockeyOddsCache = { data: null, ts: 0 }
+const HOCKEY_ODDS_TTL = 6 * 60 * 60 * 1000   // 6 hours — conserves monthly quota
+const HOCKEY_ODDS_SPORTS = ['icehockey_nhl', 'icehockey_khl', 'icehockey_shl']
+
+async function fetchHockeyOdds() {
+  if (hockeyOddsCache.data && Date.now() - hockeyOddsCache.ts < HOCKEY_ODDS_TTL) {
+    return hockeyOddsCache.data
+  }
+  if (!process.env.ODDS_API_KEY) return {}
+  const allEvents = []
+  for (const sport of HOCKEY_ODDS_SPORTS) {
+    try {
+      const events = await oddsApiGet(sport)
+      if (Array.isArray(events)) allEvents.push(...events)
+      console.log(`[odds-api/hockey] ${sport}: ${Array.isArray(events) ? events.length : 0} events`)
+    } catch (err) {
+      console.warn(`[odds-api/hockey] ${sport} failed: ${err.message}`)
+    }
+  }
+  const lookup = buildOddsLookup(allEvents)
+  hockeyOddsCache = { data: lookup, ts: Date.now() }
+  console.log(`[odds-api/hockey] cached odds for ${Math.floor(Object.keys(lookup).length / 2)} matches`)
+  return lookup
 }
 
 // Fetch all available esports odds from The Odds API and cache result
