@@ -11,7 +11,7 @@ let hockeyCache = { data: null, ts: 0 }
 let basketballCache = { data: null, ts: 0 }
 const UPCOMING_TTL = 15 * 60 * 1000
 const LIVE_TTL = 60 * 1000
-const HOCKEY_TTL = 60 * 60 * 1000   // 1 hour — refresh more often during active tournaments
+const HOCKEY_TTL = 10 * 60 * 1000   // 10 min — frequent refresh during active tournaments
 const BASKETBALL_TTL = 6 * 60 * 60 * 1000
 
 function sstatsGet(path, params = {}) {
@@ -492,6 +492,8 @@ function toAllSportsDate(isoDate) {
 }
 
 router.get('/hockey', async (req, res) => {
+  // ?force=1 clears cache immediately (for debugging / manual refresh)
+  if (req.query.force === '1') { hockeyCache = { data: null, ts: 0 }; seasonIdCache.clear() }
   if (hockeyCache.data && Date.now() - hockeyCache.ts < HOCKEY_TTL) {
     return res.json({ data: hockeyCache.data, cached: true })
   }
@@ -554,26 +556,36 @@ router.get('/hockey', async (req, res) => {
     const validTournaments = tournamentsWithSeasons.filter(t => t.seasonId)
     console.log(`[matches/hockey] tournaments with valid seasons: ${validTournaments.map(t => `${t.league}(${t.seasonId})`).join(', ')}`)
 
-    // Fetch matches: IceHockeyApi → AllSportsApi2 → Sofascore direct (free fallback)
+    // Fetch matches: IceHockeyApi → AllSportsApi2 (legacy) → AllSportsApi2 (v1) → Sofascore direct
+    // Note: IceHockeyApi covers MHL/VHL/KHL well. AllSports v1-path covers ИИХФ WC.
     async function fetchTournamentMatches(t) {
-      const rapidPath = `/api/tournament/${t.id}/season/${t.seasonId}/matches/next/0`
-      const sofaPath  = `/api/v1/unique-tournament/${t.id}/season/${t.seasonId}/events/next/0`
-      for (const [label, fetchFn] of [
-        ['icehockeyapi', () => iceHockeyGet(rapidPath)],
-        ['allsportsapi2', () => allSportsGetPath(rapidPath)],
-        ['sofascore',    () => sofascoreGet(sofaPath)],
-      ]) {
+      const legacyPath = `/api/tournament/${t.id}/season/${t.seasonId}/matches/next/0`
+      const v1Path     = `/api/v1/unique-tournament/${t.id}/season/${t.seasonId}/events/next/0`
+      const sofaPath   = `/api/v1/unique-tournament/${t.id}/season/${t.seasonId}/events/next/0`
+
+      const sources = [
+        ['icehockeyapi',     () => iceHockeyGet(legacyPath)],
+        ['allsportsapi2',    () => allSportsGetPath(legacyPath)],
+        ['allsportsapi2/v1', () => allSportsGetPath(v1Path)],      // Sofascore v1 path on AllSports
+        ['sofascore',        () => sofascoreGet(sofaPath)],         // direct, free, no quota
+      ]
+
+      for (const [label, fetchFn] of sources) {
         try {
           const data = await fetchFn()
-          const evts = data?.events || []
-          if (evts.length > 0 || label === 'sofascore') {
+          // AllSports / Sofascore use { events: [...] }; IceHockeyApi may nest under data
+          const evts = data?.events || data?.data?.events || []
+          const isLast = label === 'sofascore'
+          if (evts.length > 0 || isLast) {
             console.log(`[matches/hockey] T=${t.id} "${t.league}" s=${t.seasonId} via ${label}: ${evts.length} events`)
             return { ...t, events: evts }
           }
+          console.log(`[matches/hockey] T=${t.id} "${t.league}" via ${label}: 0 events — trying next source`)
         } catch (err) {
-          console.warn(`[matches/hockey] ${label} T=${t.id} failed: ${err.message}`)
+          console.warn(`[matches/hockey] ${label} T=${t.id} failed: ${err.message.slice(0, 100)}`)
         }
       }
+      console.warn(`[matches/hockey] T=${t.id} "${t.league}": all sources exhausted — 0 events`)
       return { ...t, events: [] }
     }
 
