@@ -944,38 +944,31 @@ router.get('/hockey-cache-reset', (req, res) => {
   res.json({ ok: true, message: 'Hockey cache + season ID cache cleared — next /matches/hockey will re-fetch' })
 })
 
-// GET /matches/hockey-debug — discover working IceHockeyApi endpoints
+// GET /matches/hockey-debug — test IceHockeyApi endpoints one-by-one with delay
 router.get('/hockey-debug', async (req, res) => {
   if (!process.env.RAPIDAPI_KEY) return res.json({ error: 'RAPIDAPI_KEY not set' })
 
   const today = new Date().toISOString().slice(0, 10)
   const result = { ts: new Date().toISOString(), today, endpointTests: [] }
+  const delay = ms => new Promise(r => setTimeout(r, ms))
 
-  // Test a bunch of candidate paths on IceHockeyApi to find what actually works
+  // Only test the "existed" paths (returned rate-limit, not NOT_FOUND) — sequentially with pause
   const candidatePaths = [
-    `/api/hockey/matches/date/${today}`,
-    `/api/matches/date/${today}`,
-    `/hockey/games?date=${today}`,
-    `/api/hockey/games?date=${today}`,
     `/api/hockey/schedule/date/${today}`,
     `/api/hockey/livescores`,
-    `/api/hockey/competitions`,
     `/api/hockey/leagues`,
-    `/api/leagues`,
-    `/api/hockey/matches/live`,
-    `/api/matches/live`,
-    `/api/hockey/fixtures?date=${today}`,
     `/api/hockey/tournaments`,
-    `/api/v1/hockey/matches/${today}`,
+    `/api/hockey/fixtures?date=${today}`,
   ]
 
   for (const path of candidatePaths) {
+    await delay(700)  // 700ms between requests — stay under per-second rate limit
     try {
       const data = await iceHockeyGet(path)
-      const raw = JSON.stringify(data).slice(0, 300)
-      const isError = raw.includes('"message"') && raw.includes('does not exist')
-      const isQuota = raw.includes('exceeded') || raw.includes('quota')
-      result.endpointTests.push({ path, status: isError ? 'NOT_FOUND' : isQuota ? 'QUOTA' : 'OK', raw })
+      const raw = JSON.stringify(data).slice(0, 800)
+      const isError = raw.includes('does not exist')
+      const isQuota = raw.includes('exceeded') || raw.includes('rate limit')
+      result.endpointTests.push({ path, status: isError ? 'NOT_FOUND' : isQuota ? 'RATE_LIMIT' : 'OK', raw })
     } catch (err) {
       result.endpointTests.push({ path, status: 'ERROR', error: err.message })
     }
