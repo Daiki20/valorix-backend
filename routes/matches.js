@@ -944,71 +944,41 @@ router.get('/hockey-cache-reset', (req, res) => {
   res.json({ ok: true, message: 'Hockey cache + season ID cache cleared — next /matches/hockey will re-fetch' })
 })
 
-// GET /matches/hockey-debug — raw API diagnostic: season IDs + first events per tournament
+// GET /matches/hockey-debug — discover working IceHockeyApi endpoints
 router.get('/hockey-debug', async (req, res) => {
   if (!process.env.RAPIDAPI_KEY) return res.json({ error: 'RAPIDAPI_KEY not set' })
 
-  const result = {
-    ts: new Date().toISOString(),
-    tournaments: [],
-  }
+  const today = new Date().toISOString().slice(0, 10)
+  const result = { ts: new Date().toISOString(), today, endpointTests: [] }
 
-  for (const t of HOCKEY_TOURNAMENTS_BASE) {
-    const entry = { id: t.id, league: t.league, seasonId: null, seasonSource: null, eventsCount: 0, sampleEvents: [], error: null }
+  // Test a bunch of candidate paths on IceHockeyApi to find what actually works
+  const candidatePaths = [
+    `/api/hockey/matches/date/${today}`,
+    `/api/matches/date/${today}`,
+    `/hockey/games?date=${today}`,
+    `/api/hockey/games?date=${today}`,
+    `/api/hockey/schedule/date/${today}`,
+    `/api/hockey/livescores`,
+    `/api/hockey/competitions`,
+    `/api/hockey/leagues`,
+    `/api/leagues`,
+    `/api/hockey/matches/live`,
+    `/api/matches/live`,
+    `/api/hockey/fixtures?date=${today}`,
+    `/api/hockey/tournaments`,
+    `/api/v1/hockey/matches/${today}`,
+  ]
 
-    // Try IceHockeyApi seasons
-    let seasonId = null
+  for (const path of candidatePaths) {
     try {
-      const data = await iceHockeyGet(`/api/tournament/${t.id}/seasons`)
-      entry.iceHockeyRaw = JSON.stringify(data).slice(0, 600)  // raw response preview
-      const seasons = (data?.seasons || data?.uniqueTournamentSeasons || []).sort((a, b) =>
-        (Number(b.year) || 0) - (Number(a.year) || 0) || (Number(b.id) || 0) - (Number(a.id) || 0)
-      )
-      entry.iceHockeySeasons = seasons.slice(0, 3).map(s => ({ id: s.id, year: s.year, name: s.name }))
-      if (seasons[0]?.id) { seasonId = seasons[0].id; entry.seasonSource = 'icehockeyapi' }
-    } catch (err) { entry.iceHockeyError = err.message }
-
-    // Fallback to AllSportsApi2
-    if (!seasonId) {
-      try {
-        const data = await allSportsGetPath(`/api/tournament/${t.id}/seasons`)
-        entry.allSportsRaw = JSON.stringify(data).slice(0, 600)  // raw response preview
-        const seasons = (data?.seasons || data?.uniqueTournamentSeasons || []).sort((a, b) =>
-          (Number(b.year) || 0) - (Number(a.year) || 0) || (Number(b.id) || 0) - (Number(a.id) || 0)
-        )
-        entry.allSportsSeasons = seasons.slice(0, 3).map(s => ({ id: s.id, year: s.year, name: s.name }))
-        if (seasons[0]?.id) { seasonId = seasons[0].id; entry.seasonSource = 'allsportsapi2' }
-      } catch (err) { entry.allSportsError = err.message }
+      const data = await iceHockeyGet(path)
+      const raw = JSON.stringify(data).slice(0, 300)
+      const isError = raw.includes('"message"') && raw.includes('does not exist')
+      const isQuota = raw.includes('exceeded') || raw.includes('quota')
+      result.endpointTests.push({ path, status: isError ? 'NOT_FOUND' : isQuota ? 'QUOTA' : 'OK', raw })
+    } catch (err) {
+      result.endpointTests.push({ path, status: 'ERROR', error: err.message })
     }
-
-    entry.seasonId = seasonId
-
-    // Try to fetch events if we have a season ID
-    if (seasonId) {
-      try {
-        const data = await iceHockeyGet(`/api/tournament/${t.id}/season/${seasonId}/matches/next/0`)
-        const evts = data?.events || []
-        entry.eventsCount = evts.length
-        entry.sampleEvents = evts.slice(0, 3).map(e => ({
-          id: e.id,
-          home: e.homeTeam?.name,
-          away: e.awayTeam?.name,
-          status: e.status?.type,
-          ts: e.startTimestamp,
-        }))
-        entry.iceHockeyMatchesRaw = data?.error || null
-      } catch (err) { entry.matchFetchError = err.message }
-
-      // Also try AllSportsApi2 for comparison
-      try {
-        const data2 = await allSportsGetPath(`/api/tournament/${t.id}/season/${seasonId}/matches/next/0`)
-        const evts2 = data2?.events || []
-        entry.eventsCountAllSports = evts2.length
-        entry.allSportsMatchError = data2?.error || null
-      } catch (err) { entry.allSportsMatchFetchError = err.message }
-    }
-
-    result.tournaments.push(entry)
   }
 
   res.json(result)
