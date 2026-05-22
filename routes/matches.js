@@ -329,6 +329,25 @@ const KHL_TEAMS_RU = {
   'Neftekhimik Nizhnekamsk': 'Нефтехимик', 'Sibir Novosibirsk': 'Сибирь',
   'HC Amur': 'Амур', 'HC Torpedo': 'Торпедо', 'HC Traktor': 'Трактор',
   'HC Spartak': 'Спартак', 'HC Avangard': 'Авангард', 'HC Admiral': 'Адмирал',
+  // МХЛ
+  'Loko Yaroslavl': 'Локо Ярославль', 'Loko': 'Локо',
+  'Krasnaya Armiya': 'Красная Армия', 'Red Army': 'Красная Армия',
+  'SKA-Neva': 'СКА-Нева', 'SKA-1946': 'СКА-1946',
+  'Stalnye Lisy': 'Стальные Лисы', 'Reaktor': 'Реактор',
+  'Serebryanye Lvy': 'Серебряные Львы', 'Ак Барс-Зилант': 'Ак Барс-Зилант',
+  'Ak Bars-Zilant': 'Ак Барс-Зилант', 'HK Ryazan': 'ХК Рязань',
+  'Chayka': 'Чайка', 'Atlant': 'Атлант', 'Yuzhny Ural': 'Южный Урал',
+  'Russkie Vityazi': 'Русские Витязи', 'Michurinsky Lokomotiv': 'Лок. Мичуринск',
+  'Belye Medvedi': 'Белые Медведи', 'Dynamo SPb': 'Динамо СПб',
+  'Toros': 'Торос', 'Irbis': 'Ирбис', 'Bars': 'Барс',
+  // ВХЛ
+  'Neftyanik': 'Нефтяник', 'Rubin': 'Рубин', 'Dizel': 'Дизель',
+  'Sokol': 'Сокол', 'Buran': 'Буран', 'Metallurg': 'Металлург',
+  'Kristall': 'Кристалл', 'Zауралье': 'Зауралье', 'Zауrаlye': 'Зауралье',
+  'Zauralie': 'Зауралье', 'Molot-Prikamye': 'Молот-Прикамье',
+  'HK Lipetsk': 'ХК Липецк', 'Khimik': 'Химик',
+  'Ugra Khanty-Mansiysk': 'Югра', 'Ugra': 'Югра',
+  'HC Khimik': 'Химик Воскресенск', 'Voskresensk': 'Воскресенск',
 }
 
 // ИИХФ: национальные сборные
@@ -1056,10 +1075,10 @@ router.get('/esports', async (req, res) => {
   res.json({ data: games })
 })
 
-// GET /matches/team-logo/:teamId — proxy Sofascore team image (browser can't call Sofascore directly)
-// Cached 24h on client + 1h on server to avoid hammering Sofascore
+// GET /matches/team-logo/:teamId — proxy team image via AllSportsApi2 (PRO key, no Sofascore block)
+// Cached 24h on client + 6h on server — logos rarely change
 const logoCache = new Map()  // teamId → { buf, type, ts }
-const LOGO_TTL = 60 * 60 * 1000  // 1h
+const LOGO_TTL = 6 * 60 * 60 * 1000  // 6h
 
 router.get('/team-logo/:teamId', async (req, res) => {
   const teamId = parseInt(req.params.teamId, 10)
@@ -1072,40 +1091,63 @@ router.get('/team-logo/:teamId', async (req, res) => {
     return res.send(cached.buf)
   }
 
-  try {
-    const imgData = await new Promise((resolve, reject) => {
-      const options = {
-        hostname: 'api.sofascore.com',
-        path: `/api/v1/team/${teamId}/image`,
-        method: 'GET',
-        timeout: 6000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'image/webp,image/png,image/*,*/*',
-          'Referer': 'https://www.sofascore.com/',
-          'Origin': 'https://www.sofascore.com',
-        },
+  const key = process.env.RAPIDAPI_KEY
+  if (!key) return res.status(503).end()
+
+  // Try sources in order: AllSportsApi2 (authenticated, no block), then img.sofascore.com CDN
+  const sources = [
+    () => new Promise((resolve, reject) => {
+      const opts = {
+        hostname: 'allsportsapi2.p.rapidapi.com',
+        path: `/api/team/${teamId}/image`,
+        method: 'GET', timeout: 6000,
+        headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'allsportsapi2.p.rapidapi.com', 'Accept': 'image/png,image/*' },
       }
-      const req2 = https.request(options, r => {
+      const r2 = https.request(opts, r => {
         const chunks = []
         r.on('data', c => chunks.push(c))
         r.on('end', () => {
-          if (r.statusCode !== 200) { reject(new Error(`HTTP ${r.statusCode}`)); return }
-          resolve({ buf: Buffer.concat(chunks), type: r.headers['content-type'] || 'image/png' })
+          const ct = r.headers['content-type'] || ''
+          if (r.statusCode !== 200 || !ct.startsWith('image')) { reject(new Error(`allsports ${r.statusCode}`)); return }
+          resolve({ buf: Buffer.concat(chunks), type: ct })
         })
       })
-      req2.on('error', reject)
-      req2.on('timeout', () => { req2.destroy(); reject(new Error('timeout')) })
-      req2.end()
-    })
-    logoCache.set(teamId, { ...imgData, ts: Date.now() })
-    res.set('Content-Type', imgData.type)
-    res.set('Cache-Control', 'public, max-age=86400')
-    res.send(imgData.buf)
-  } catch (err) {
-    // Return 404 — frontend falls back to letter avatar
-    res.status(404).end()
+      r2.on('error', reject)
+      r2.on('timeout', () => { r2.destroy(); reject(new Error('timeout')) })
+      r2.end()
+    }),
+    () => new Promise((resolve, reject) => {
+      const opts = {
+        hostname: 'img.sofascore.com',
+        path: `/api/v1/team/${teamId}/image`,
+        method: 'GET', timeout: 6000,
+        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.sofascore.com/' },
+      }
+      const r2 = https.request(opts, r => {
+        const chunks = []
+        r.on('data', c => chunks.push(c))
+        r.on('end', () => {
+          const ct = r.headers['content-type'] || ''
+          if (r.statusCode !== 200 || !ct.startsWith('image')) { reject(new Error(`sofascore ${r.statusCode}`)); return }
+          resolve({ buf: Buffer.concat(chunks), type: ct })
+        })
+      })
+      r2.on('error', reject)
+      r2.on('timeout', () => { r2.destroy(); reject(new Error('timeout')) })
+      r2.end()
+    }),
+  ]
+
+  for (const fetchFn of sources) {
+    try {
+      const imgData = await fetchFn()
+      logoCache.set(teamId, { ...imgData, ts: Date.now() })
+      res.set('Content-Type', imgData.type)
+      res.set('Cache-Control', 'public, max-age=86400')
+      return res.send(imgData.buf)
+    } catch { /* try next */ }
   }
+  res.status(404).end()
 })
 
 // GET /matches/hockey-cache-reset — admin: force-expire hockey cache so next request re-fetches
