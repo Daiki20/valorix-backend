@@ -856,6 +856,37 @@ function extractOddsApiOdds(event) {
 
 const _normOdds = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
 
+// ── National team canonical aliases (applied to normalized English names) ────
+// Both Pinnacle and local APIs must resolve to the same canonical form.
+// Key = result of _normOdds(apiName); Value = canonical English slug.
+const NATIONAL_TEAM_NORM = {
+  // Great Britain variants
+  'greatbritain':          'britain',
+  'unitedkingdom':         'britain',
+  'gbr':                   'britain',
+  // Czech Republic / Czechia
+  'czechrepublic':         'czechia',
+  'cze':                   'czechia',
+  // Korea
+  'southkorea':            'korea',
+  'korearep':              'korea',
+  'republicofkorea':       'korea',
+  // DPRK
+  'northkorea':            'dprkorea',
+  'democraticpeoplesrepublicofkorea': 'dprkorea',
+  // USA
+  'unitedstates':          'usa',
+  'unitedstatesofamerica': 'usa',
+  // Belarus / Russia
+  'belorussia':            'belarus',
+  'byelorussia':           'belarus',
+  'russianfederation':     'russia',
+  // Slovakia
+  'slovakrepublic':        'slovakia',
+  // Switzerland
+  'swiss':                 'switzerland',
+}
+
 // ── Cyrillic → Latin transliteration (BGN/PCGN, common in sports databases) ────
 const _CYR = {
   'а':'a',  'б':'b',  'в':'v',  'г':'g',  'д':'d',
@@ -963,8 +994,9 @@ function normalizeTeamName(name) {
   if (firstWord && HOCKEY_TEAM_ALIASES[firstWord]) return HOCKEY_TEAM_ALIASES[firstWord]
   // 3. Has Cyrillic → transliterate (fallback for unknown clubs)
   if (/[а-яё]/.test(cyrKey)) return _translit(cyrKey) || _normOdds(name)
-  // 4. English already → standard normalize
-  return _normOdds(name)
+  // 4. English → normalize, then apply national-team canonical map
+  const normed = _normOdds(name)
+  return NATIONAL_TEAM_NORM[normed] || normed
 }
 
 // Build lookup: normalizedTeamName → { homeOdds, awayOdds, homeNorm, awayNorm }
@@ -976,8 +1008,8 @@ function buildOddsLookup(events) {
     const hOdds = prices[ev.home_team]
     const aOdds = prices[ev.away_team]
     if (!hOdds || !aOdds) continue
-    const hN = _normOdds(ev.home_team)
-    const aN = _normOdds(ev.away_team)
+    const hN = normalizeTeamName(ev.home_team)
+    const aN = normalizeTeamName(ev.away_team)
     const entry = { homeOdds: hOdds, awayOdds: aOdds, homeNorm: hN, awayNorm: aN }
     map[hN] = entry
     map[aN] = entry
@@ -1165,8 +1197,8 @@ function parsePinnacleMarkets(items) {
 
     if (!hOdds || !aOdds || hOdds < 1 || aOdds < 1) continue
 
-    const hN = _normOdds(home)
-    const aN = _normOdds(away)
+    const hN = normalizeTeamName(home)
+    const aN = normalizeTeamName(away)
     if (!hN || !aN) continue
 
     const entry = { homeOdds: hOdds, awayOdds: aOdds, homeNorm: hN, awayNorm: aN }
@@ -1240,10 +1272,10 @@ async function fetchPinnacleHockeyOdds() {
 let hockeyOddsCache = { data: null, ts: 0 }
 const HOCKEY_ODDS_TTL = 6 * 60 * 60 * 1000   // 6 hours — conserves monthly quota
 const HOCKEY_ODDS_SPORTS = [
-  'icehockey_nhl',               // NHL — always needed (playoffs run Apr–Jun)
-  'icehockey_khl',               // KHL — off-season May–Aug, returns 0 events
-  'icehockey_world_championship', // IIHF WC — try this key first
-  'icehockey_iihf_worlds',        // IIHF WC alternative key (Odds API variant)
+  'icehockey_nhl',   // NHL playoffs (Apr–Jun) — confirmed working
+  'icehockey_khl',   // KHL — off-season May–Aug, returns 0 events (expected)
+  // IIHF WC: icehockey_world_championship and icehockey_iihf_worlds both return
+  // HTTP 404 — TheOddsAPI doesn't carry IIHF. Use Pinnacle (league 1599) instead.
 ]
 
 async function fetchHockeyOdds() {
@@ -1369,8 +1401,8 @@ function parseApiHockeyOddsResponse(items) {
     const avg = arr => parseFloat((arr.reduce((s, v) => s + v, 0) / arr.length).toFixed(2))
     const hOdds = avg(buckets.home)
     const aOdds = avg(buckets.away)
-    const hN = _normOdds(home)
-    const aN = _normOdds(away)
+    const hN = normalizeTeamName(home)
+    const aN = normalizeTeamName(away)
     if (!hN || !aN) continue
 
     const entry = { homeOdds: hOdds, awayOdds: aOdds, homeNorm: hN, awayNorm: aN }
