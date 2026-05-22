@@ -161,25 +161,63 @@ function toExpressDate(isoDate) {
   return `${d}/${m}/${y}`
 }
 
-// Fetch all hockey matches for a date from AllSportsApi (date-based, no season IDs needed)
+// Cache season IDs for express (24h)
+const seasonIdCacheExpress = new Map()
+const SEASON_TTL_EX = 24 * 60 * 60 * 1000
+
+async function fetchCurrentSeasonIdExpress(tournamentId) {
+  const cached = seasonIdCacheExpress.get(tournamentId)
+  if (cached && Date.now() - cached.ts < SEASON_TTL_EX) return cached.seasonId
+  try {
+    const data = await allSportsGetPathExpress(`/api/tournament/${tournamentId}/seasons`)
+    const seasons = data?.seasons || []
+    if (!seasons.length) return null
+    const sorted = seasons.sort((a, b) => {
+      const yearDiff = (Number(b.year) || 0) - (Number(a.year) || 0)
+      return yearDiff !== 0 ? yearDiff : (Number(b.id) || 0) - (Number(a.id) || 0)
+    })
+    const seasonId = sorted[0]?.id
+    if (seasonId) seasonIdCacheExpress.set(tournamentId, { seasonId, ts: Date.now() })
+    return seasonId || null
+  } catch { return null }
+}
+
+// Hockey tournaments for express (dynamic season IDs)
+const HOCKEY_EXPRESS_TOURNAMENTS_BASE = [
+  { id: 3,    league: 'ИИХФ · Чемпионат мира' },
+  { id: 268,  league: 'КХЛ' },
+  { id: 1159, league: 'МХЛ' },
+  { id: 1141, league: 'ВХЛ' },
+]
+
+// Fetch AllSportsApi hockey matches with dynamic season IDs
 async function fetchAllSportsHockey(targetDate) {
   if (!process.env.RAPIDAPI_KEY) return []
-  const dateStr = toExpressDate(targetDate)
-  try {
-    const data = await allSportsGetPathExpress(`/api/hockey/matches/${dateStr}`)
-    const events = data?.events || data?.results || data?.matches || []
-    const matches = []
-    for (const ev of events) {
+  const tournamentsWithSeasons = await Promise.all(
+    HOCKEY_EXPRESS_TOURNAMENTS_BASE.map(async t => {
+      const seasonId = await fetchCurrentSeasonIdExpress(t.id)
+      return { ...t, seasonId }
+    })
+  )
+  const validTournaments = tournamentsWithSeasons.filter(t => t.seasonId)
+  const results = await Promise.allSettled(
+    validTournaments.map(t =>
+      allSportsGetPathExpress(`/api/tournament/${t.id}/season/${t.seasonId}/matches/next/0`)
+        .then(data => ({ league: t.league, events: data?.events || [] }))
+    )
+  )
+  const matches = []
+  for (const r of results) {
+    if (r.status !== 'fulfilled') continue
+    for (const ev of r.value.events) {
       const statusType = (ev.status?.type || '').toLowerCase()
       if (statusType === 'finished') continue
-      const leagueName = ev.tournament?.name || ev.league?.name || ''
-      if (!isImportantHockeyLeagueExpress(leagueName)) continue
       const home = ev.homeTeam?.name || ''
       const away = ev.awayTeam?.name || ''
-      if (home && away) matches.push({ home, away, league: leagueName })
+      if (home && away) matches.push({ home, away, league: r.value.league })
     }
-    return matches
-  } catch { return [] }
+  }
+  return matches
 }
 
 // Fetch hockey games for a specific date — NHL free API + AllSportsApi date-based
