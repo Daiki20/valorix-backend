@@ -644,9 +644,26 @@ router.get('/hockey', async (req, res) => {
 
     if (Object.keys(oddsMap).length) {
       let oddsOverlaid = 0
+      let noMatchLog = 0
+
+      // Log a sample of normalized oddsMap keys so we can verify coverage
+      const mapSample = Object.keys(oddsMap).filter((_, i) => i % 2 === 0).slice(0, 12).join(', ')
+      console.log(`[odds/map] ${Math.floor(Object.keys(oddsMap).length / 2)} entries — sample: ${mapSample}`)
+
       for (const game of games) {
         const odds = lookupOdds(game.homeEn || game.home, game.awayEn || game.away, oddsMap)
-        if (odds) { game.odds1x2 = odds; oddsOverlaid++ }
+        if (odds) {
+          game.odds1x2 = odds
+          oddsOverlaid++
+        } else if (noMatchLog < 10) {
+          // Log what name we tried to match so aliases can be added/fixed
+          const rawH = game.homeEn || game.home
+          const rawA = game.awayEn || game.away
+          const hN = normalizeTeamName(rawH)
+          const aN = normalizeTeamName(rawA)
+          console.log(`[odds/no-match] "${rawH}"→"${hN}" | "${rawA}"→"${aN}"`)
+          noMatchLog++
+        }
       }
       console.log(`[matches/hockey] overlaid odds on ${oddsOverlaid}/${games.length} matches`)
     }
@@ -839,69 +856,114 @@ function extractOddsApiOdds(event) {
 
 const _normOdds = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
 
-// ── Russian → English team name aliases ───────────────────────────────────────
-// AllSports API returns Russian names for KHL/MHL/VHL clubs;
-// Pinnacle uses English transliterations. Key = Russian lowercase no-spaces.
+// ── Cyrillic → Latin transliteration (BGN/PCGN, common in sports databases) ────
+const _CYR = {
+  'а':'a',  'б':'b',  'в':'v',  'г':'g',  'д':'d',
+  'е':'e',  'ё':'yo', 'ж':'zh', 'з':'z',  'и':'i',
+  'й':'y',  'к':'k',  'л':'l',  'м':'m',  'н':'n',
+  'о':'o',  'п':'p',  'р':'r',  'с':'s',  'т':'t',
+  'у':'u',  'ф':'f',  'х':'kh', 'ц':'ts', 'ч':'ch',
+  'ш':'sh', 'щ':'shch','ъ':'', 'ы':'y',  'ь':'',
+  'э':'e',  'ю':'yu', 'я':'ya',
+}
+const _translit = str => str.toLowerCase().split('').map(c =>
+  _CYR[c] !== undefined ? _CYR[c] : (c.match(/[a-z0-9]/) ? c : '')
+).join('')
+
+// ── Russian → English canonical team name aliases ────────────────────────────
+// Key  = Russian name, lowercase, all spaces/hyphens/dots removed.
+// Value = canonical English form used to match against Pinnacle/OddsAPI.
+// Rule: value must be a SHORT form so substring matching catches full Pinnacle names.
+//   e.g. 'lokomotiv' matches both 'lokomotivyaroslavl' and 'lokomotivjaroslavl'.
 const HOCKEY_TEAM_ALIASES = {
-  // KHL
-  'цска': 'cska', 'цскамосква': 'cska',
-  'ска': 'ska', 'скаспб': 'ska', 'скасанктпетербург': 'ska',
-  'динамо': 'dynamo', 'динамомосква': 'dynamomoscow',
-  'динамоминск': 'dynamominsk', 'динаморига': 'dynamoriga',
-  'спартак': 'spartak', 'спартакмосква': 'spartak',
+  // ── KHL ──────────────────────────────────────────────────────────────────────
+  'цска': 'cska',           'цскамосква': 'cska',
+  'ска': 'ska',             'скаспб': 'ska',    'скасанктпетербург': 'ska',
+  'динамо': 'dynamo',       'динамомосква': 'dynamo',
+  'динамоминск': 'dynamominsk',
+  'динаморига': 'dynamoriga',
+  'спартак': 'spartak',     'спартакмосква': 'spartak',
   'локомотив': 'lokomotiv', 'локомотивярославль': 'lokomotiv',
-  'авангард': 'avangard', 'авангардомск': 'avangard',
+  'авангард': 'avangard',   'авангардомск': 'avangard',
   'металлург': 'metallurg',
-  'металлургмагнитогорск': 'metallurg', 'металлургмг': 'metallurg',
-  'акбарс': 'akbars', 'акбарсказань': 'akbars',
-  'салаватюлаев': 'salavatуlaev',
-  'нефтехимик': 'neftekhimik', 'нефтехимикнижнекамск': 'neftekhimik',
-  'трактор': 'traktor', 'тракторчелябинск': 'traktor',
-  'барыс': 'barys', 'барысастана': 'barys', 'барыснурсултан': 'barys',
-  'северсталь': 'severstal', 'северстальчерепловец': 'severstal',
+  'металлургмагнитогорск': 'metallurg',
+  'металлургмг': 'metallurg',
+  'акбарс': 'akbars',       'акбарсказань': 'akbars',
+  'салаватюлаев': 'salavatyulaev',                    // fixed: was Cyrillic «у»
+  'нефтехимик': 'neftekhimik',
+  'нефтехимикнижнекамск': 'neftekhimik',
+  'трактор': 'traktor',     'тракторчелябинск': 'traktor',
+  'барыс': 'barys',         'барысастана': 'barys',   'барыснурсултан': 'barys',
+  'северсталь': 'severstal','северстальчерепловец': 'severstal',
   'автомобилист': 'avtomobilist', 'автомобилистекатеринбург': 'avtomobilist',
-  'витязь': 'vityaz', 'витязьподольск': 'vityaz',
-  'торпедо': 'torpedo', 'торпедонн': 'torpedo', 'торпедонижнийновгород': 'torpedo',
-  'амур': 'amur', 'амурхабаровск': 'amur',
-  'сибирь': 'sibir', 'сибирьновосибирск': 'sibir',
-  'куньлунь': 'kunlun', 'куньлуньредстар': 'kunlun',
-  'адмирал': 'admiral', 'адмиралвладивосток': 'admiral',
-  'лада': 'lada', 'ладатольятти': 'lada',
-  // VHL
-  'химик': 'khimik', 'химиквоскресенск': 'khimik',
-  'югра': 'yugra', 'юграхантымансийск': 'yugra',
-  'рубин': 'rubin', 'рубинтюмень': 'rubin',
-  'молот': 'molot', 'молотприкамье': 'molot',
-  'ижсталь': 'izhstal',
-  'буран': 'buran', 'буранворонеж': 'buran',
-  'зауралье': 'zauralye', 'зауральекурган': 'zauralye',
-  'горняк': 'gornyak', 'горняккузбасс': 'gornyak',
-  'кристалл': 'kristall', 'кристаллсаратов': 'kristall',
+  'витязь': 'vityaz',       'витязьподольск': 'vityaz',
+  'торпедо': 'torpedo',     'торпедонн': 'torpedo',   'торпедонижнийновгород': 'torpedo',
+  'амур': 'amur',           'амурхабаровск': 'amur',
+  'сибирь': 'sibir',        'сибирьновосибирск': 'sibir',
+  'куньлунь': 'kunlun',     'куньлуньредстар': 'kunlun',
+  'адмирал': 'admiral',     'адмиралвладивосток': 'admiral',
+  'лада': 'lada',           'ладатольятти': 'lada',
+
+  // ── VHL ──────────────────────────────────────────────────────────────────────
+  'химик': 'khimik',        'химиквоскресенск': 'khimik',
+  'югра': 'yugra',          'юграхантымансийск': 'yugra',
+  'рубин': 'rubin',         'рубинтюмень': 'rubin',
+  'молот': 'molot',         'молотприкамье': 'molot',
+  'ижсталь': 'izhstal',     'ижстальижевск': 'izhstal',
+  'буран': 'buran',         'буранворонеж': 'buran',
+  'зауралье': 'zauralye',   'зауральекурган': 'zauralye',
+  'горняк': 'gornyak',      'горняккузбасс': 'gornyak',   'горняк-угмк': 'gornyak',
+  'кристалл': 'kristall',   'кристаллсаратов': 'kristall',
   'омскиехоккеисты': 'omsk',
-  // MHL
-  'локо': 'loko', 'локоярославль': 'lokoyaroslavl',
-  'краснаяармия': 'redarmy',
+  'торос': 'toros',         'торосснефть': 'toros',       'торосснефтьнижнекамск': 'toros',
+  'дизель': 'dizel',        'дизельпенза': 'dizel',
+  'сокол': 'sokol',         'соколкрасноярск': 'sokol',
+  'южныйурал': 'yuzhnyyural', 'южныйуралорск': 'yuzhnyyural',
+  'шахтер': 'shakhter',     'шахтерсолигорск': 'shakhter',
+  'нефтяник': 'neftyanik',  'нефтяникалметьевск': 'neftyanik',
+  'буревестник': 'burevestnik',
+  'крылья': 'krylja',       'крыльясоветов': 'krylja',
+  'зеленоградскиемедведи': 'zelenograd',
+  'металлурговской': 'metallurgovskoy',
+
+  // ── MHL ──────────────────────────────────────────────────────────────────────
+  // Key rule: short form so 'loko' matches 'lokomotivyaroslavl' via substring
+  'локо': 'loko',           'локоярославль': 'loko',   // NOT 'lokoyaroslavl' — loko⊂lokomotiv
+  'краснаяармия': 'redarmy', 'краснаяармиямосква': 'redarmy',
   'стальныелисы': 'steelfoxes',
   'гренадеры': 'grenadery',
-  'атланты': 'atlants',
-  'мхкдинамо': 'dynamojuniors', 'мхкдинамомосква': 'dynamojuniors',
-  'мхкцска': 'cskajuniors',
-  'мхкска': 'skajuniors',
-  'спартакмхк': 'spartakjuniors',
+  'атланты': 'atlants',     'атлантымытищи': 'atlants',
+  'мхкдинамо': 'dynamo',    'мхкдинамомосква': 'dynamo',
+  'мхкцска': 'cska',
+  'мхкска': 'ska',          'мхкскаспб': 'ska',
+  'спартакмхк': 'spartak',
+  'белыемедведи': 'belyemedvedi', 'белыемедведичелябинск': 'belyemedvedi',
+  'снежныебарсы': 'snezhnyebarsy',
+  'юрмала': 'jurmala',
+  'рубин': 'rubin',  // also MHL
+  'алмаз': 'almaz',         'алмазчереповец': 'almaz',
+  'стальныелисы': 'steelfoxes',
+  'капитан': 'kapitan',
 }
 
-// Normalize a team name for odds matching.
-// Handles Russian (Cyrillic) club names via alias lookup → English.
-// Falls through to _normOdds for already-English names (NHL etc.).
+// Normalize a hockey team name for odds matching.
+// Pipeline:
+//   1. Full Russian key  → alias map → canonical English
+//   2. First Russian word → alias map → canonical English
+//   3. Any Cyrillic      → transliterate to Latin
+//   4. English           → _normOdds (strip non-alphanumeric)
 function normalizeTeamName(name) {
   if (!name) return ''
-  // Build Cyrillic key: lowercase, strip spaces/hyphens/dots
-  const cyrKey = name.toLowerCase().replace(/[\s\-\.«»"']/g, '')
+  // Build key: lowercase, strip spaces / hyphens / dots / brackets / quotes
+  const cyrKey = name.toLowerCase().replace(/[\s\-\.«»"'\/\(\)]/g, '')
+  // 1. Full key in alias map
   if (HOCKEY_TEAM_ALIASES[cyrKey]) return HOCKEY_TEAM_ALIASES[cyrKey]
-  // Partial Cyrillic key (first word only) — handles "Химик Воскресенск" → "химик" → found
+  // 2. First word only (handles "Химик Воскресенск" → "химик")
   const firstWord = cyrKey.split(/[^а-яёa-z0-9]/)[0]
   if (firstWord && HOCKEY_TEAM_ALIASES[firstWord]) return HOCKEY_TEAM_ALIASES[firstWord]
-  // Fall through: English names (NHL, IIHF) work fine with _normOdds
+  // 3. Has Cyrillic → transliterate (fallback for unknown clubs)
+  if (/[а-яё]/.test(cyrKey)) return _translit(cyrKey) || _normOdds(name)
+  // 4. English already → standard normalize
   return _normOdds(name)
 }
 
