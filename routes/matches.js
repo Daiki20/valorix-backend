@@ -1061,12 +1061,6 @@ async function fetchPinnacleHockeyOdds() {
         const data = await pinnacleGet(qs)
         // Response shape: { sport_id, sport_name, last, last_call, events: [...] }
         const items = data?.events ?? data?.markets ?? data?.data ?? (Array.isArray(data) ? data : [])
-        if (items.length > 0) {
-          console.log(`[pinnacle] ${label} first item keys: ${Object.keys(items[0]).join(', ')}`)
-          console.log(`[pinnacle] ${label} first item: ${JSON.stringify(items[0]).slice(0, 500)}`)
-        } else {
-          console.log(`[pinnacle] ${label} events empty`)
-        }
         const parsed = parsePinnacleMarkets(items)
         const count = Math.floor(Object.keys(parsed).length / 2)
         console.log(`[pinnacle/odds] ${label} (league=${id}): ${count} matches`)
