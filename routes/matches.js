@@ -858,21 +858,33 @@ function buildOddsLookup(events) {
 }
 
 // Match team names against odds lookup; return odds1x2 or null
+// IMPORTANT: requires BOTH teams to match the same entry to prevent false positives
 function lookupOdds(psHome, psAway, oddsMap) {
   if (!oddsMap || !Object.keys(oddsMap).length) return null
   const hN = _normOdds(psHome)
   const aN = _normOdds(psAway)
   // Guard: if names normalized to empty (e.g. Cyrillic), skip — avoids false matches
   if (!hN || !aN) return null
-  // Exact lookup
-  let entry = oddsMap[hN] || oddsMap[aN]
-  // Substring fallback
+
+  // 1. Both teams exact match → same entry = perfect
+  const entryH = oddsMap[hN]
+  const entryA = oddsMap[aN]
+  let entry = (entryH && entryA && entryH === entryA) ? entryH : null
+
+  // 2. Substring fallback — but BOTH teams must match the same entry
   if (!entry) {
-    const key = Object.keys(oddsMap).find(k =>
-      k.includes(hN) || hN.includes(k) || k.includes(aN) || aN.includes(k)
-    )
-    if (key) entry = oddsMap[key]
+    const seen = new Set()
+    for (const e of Object.values(oddsMap)) {
+      if (seen.has(e)) continue
+      seen.add(e)
+      const hFwd = e.homeNorm.includes(hN) || hN.includes(e.homeNorm)
+      const aFwd = e.awayNorm.includes(aN) || aN.includes(e.awayNorm)
+      const hRev = e.homeNorm.includes(aN) || aN.includes(e.homeNorm)
+      const aRev = e.awayNorm.includes(hN) || hN.includes(e.awayNorm)
+      if ((hFwd && aFwd) || (hRev && aRev)) { entry = e; break }
+    }
   }
+
   if (!entry) return null
   const isHomeSide = entry.homeNorm.includes(hN) || hN.includes(entry.homeNorm)
   return {
@@ -996,8 +1008,15 @@ function parsePinnacleMarkets(items) {
     if (!home || !away) continue
 
     // Extract moneyline odds — try every known path
+    // Pinnacle wrapper: odds are in item.periods.num_N.money_line (N varies: 0, 6, etc.)
     let hOdds = null, aOdds = null
-    const ml = item.money_line ?? item.moneyline ?? item.periods?.num_0?.money_line
+    const findPeriodMl = () => {
+      for (const p of Object.values(item.periods || {})) {
+        if (p.money_line) return p.money_line
+      }
+      return null
+    }
+    const ml = item.money_line ?? item.moneyline ?? findPeriodMl()
            ?? item.odds?.moneyline ?? item.markets?.moneyline
     if (ml) {
       hOdds = parseFloat(ml.home ?? ml.homeOdds ?? ml[home])
