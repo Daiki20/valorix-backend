@@ -939,25 +939,9 @@ let _pinnacleLeagueIds = null   // { iihfWC, khl, nhl }
 
 async function getPinnacleHockeySportId() {
   if (_pinnacleSportId) return _pinnacleSportId
-  // Discover ice hockey sport_id from the Pinnacle wrapper API
-  try {
-    const data = await pinnacleGet('/kit/v1/sports?is_have_odds=true')
-    const sports = data?.sports || data?.data || (Array.isArray(data) ? data : [])
-    console.log('[pinnacle] all sports:', sports.map(s => `${s.id}:${s.name}`).join(' | '))
-    const hockey = sports.find(s =>
-      /ice.?hockey|хоккей/i.test(s.name || s.sport_name || '')
-    )
-    if (hockey) {
-      _pinnacleSportId = hockey.id ?? hockey.sport_id
-      console.log(`[pinnacle] found ice hockey sport_id=${_pinnacleSportId} ("${hockey.name}")`)
-      return _pinnacleSportId
-    }
-    console.warn('[pinnacle] ice hockey not found in sports list, falling back to id=19')
-  } catch (err) {
-    console.warn('[pinnacle] sports discovery failed:', err.message)
-  }
-  // Pinnacle standard sport_id for ice hockey is 19
-  _pinnacleSportId = 19
+  // sport_id=4 = Hockey in pinnacle-betting-odds.p.rapidapi.com wrapper
+  // Confirmed from /kit/v1/sports: 1:Soccer|2:Tennis|3:Basketball|4:Hockey|5:Volleyball
+  _pinnacleSportId = 4
   return _pinnacleSportId
 }
 
