@@ -605,36 +605,42 @@ router.get('/hockey', async (req, res) => {
   }
 
   // ── Overlay real bookmaker odds ────────────────────────────────────────────────
-  // Priority: Pinnacle → API-Hockey → The Odds API (fallback)
+  // Strategy: MERGE all sources. Pinnacle covers ИИХФ WC; The Odds API covers NHL.
+  // Pinnacle sometimes returns unrelated leagues (Australian IHL etc.) when ИИХФ games
+  // go live — so we always run The Odds API in parallel for NHL coverage.
   if (games.length > 0) {
     let oddsMap = {}
 
-    // 1. Pinnacle Betting Odds — covers ИИХФ WC + KHL + NHL, sharp real odds
+    // 1. The Odds API — always run first as base layer (reliable NHL data)
+    if (process.env.ODDS_API_KEY) {
+      try {
+        const oddsApiMap = await fetchHockeyOdds()
+        Object.assign(oddsMap, oddsApiMap)
+        if (Object.keys(oddsApiMap).length) console.log(`[matches/hockey] Odds API base: ${Math.floor(Object.keys(oddsApiMap).length/2)} matches`)
+      } catch (err) {
+        console.warn('[matches/hockey] odds-api failed:', err.message)
+      }
+    }
+
+    // 2. Pinnacle — merge on top (covers ИИХФ WC with sharp odds, overrides Odds API)
     if (process.env.RAPIDAPI_KEY) {
       try {
-        oddsMap = await fetchPinnacleHockeyOdds()
+        const pinnacleMap = await fetchPinnacleHockeyOdds()
+        Object.assign(oddsMap, pinnacleMap)
+        if (Object.keys(pinnacleMap).length) console.log(`[matches/hockey] Pinnacle layer: ${Math.floor(Object.keys(pinnacleMap).length/2)} matches`)
       } catch (err) {
         console.warn('[matches/hockey] pinnacle odds failed:', err.message)
       }
     }
 
-    // 2. API-Hockey (api-sports) — fallback if Pinnacle returned nothing
+    // 3. API-Hockey — only if both above returned nothing
     if (!Object.keys(oddsMap).length && process.env.RAPIDAPI_KEY) {
       try {
-        oddsMap = await fetchApiHockeyOdds()
-        if (Object.keys(oddsMap).length) console.log('[matches/hockey] using API-Hockey as fallback')
+        const apiHockeyMap = await fetchApiHockeyOdds()
+        Object.assign(oddsMap, apiHockeyMap)
+        if (Object.keys(apiHockeyMap).length) console.log('[matches/hockey] using API-Hockey as last resort')
       } catch (err) {
         console.warn('[matches/hockey] api-hockey fallback failed:', err.message)
-      }
-    }
-
-    // 3. The Odds API — last resort (NHL/KHL/SHL only)
-    if (!Object.keys(oddsMap).length && process.env.ODDS_API_KEY) {
-      try {
-        oddsMap = await fetchHockeyOdds()
-        if (Object.keys(oddsMap).length) console.log('[matches/hockey] using The Odds API as last resort')
-      } catch (err) {
-        console.warn('[matches/hockey] odds-api fallback failed:', err.message)
       }
     }
 
@@ -1026,7 +1032,13 @@ function parsePinnacleMarkets(items) {
     if (!hOdds) hOdds = parseFloat(item.homeOdds ?? item.home_odds)
     if (!aOdds) aOdds = parseFloat(item.awayOdds ?? item.away_odds)
 
-    if (!hOdds || !aOdds || hOdds < 1 || aOdds < 1) continue
+    if (!hOdds || !aOdds || hOdds < 1 || aOdds < 1) {
+      // Debug: show structure of events we can't parse
+      const periodKeys = Object.keys(item.periods || {})
+      const firstPeriod = periodKeys.length ? item.periods[periodKeys[0]] : null
+      console.log(`[pinnacle] no odds for ${home} vs ${away}: periods=${periodKeys.join(',')}, firstPeriod keys=${Object.keys(firstPeriod||{}).join(',')}, firstPeriod=${JSON.stringify(firstPeriod).slice(0,300)}`)
+      continue
+    }
 
     const hN = _normOdds(home)
     const aN = _normOdds(away)
