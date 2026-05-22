@@ -175,29 +175,35 @@ const HOCKEY_TOURNAMENTS_BASE = [
 const seasonIdCache = new Map()   // tournamentId → { seasonId, ts }
 const SEASON_ID_TTL = 24 * 60 * 60 * 1000
 
+// Use IceHockeyApi (hockey-specific) for season ID — more reliable than AllSportsApi2 for hockey
 async function fetchCurrentSeasonId(tournamentId) {
   const cached = seasonIdCache.get(tournamentId)
   if (cached && Date.now() - cached.ts < SEASON_ID_TTL) return cached.seasonId
 
-  try {
-    const data = await allSportsGetPath(`/api/tournament/${tournamentId}/seasons`)
-    const seasons = data?.seasons || []
-    if (!seasons.length) return null
-    // Sort by year desc then by id desc — take the most recent
-    const sorted = seasons.sort((a, b) => {
-      const yearDiff = (Number(b.year) || 0) - (Number(a.year) || 0)
-      return yearDiff !== 0 ? yearDiff : (Number(b.id) || 0) - (Number(a.id) || 0)
-    })
-    const seasonId = sorted[0]?.id
-    if (seasonId) {
-      seasonIdCache.set(tournamentId, { seasonId, ts: Date.now() })
-      console.log(`[matches/hockey] tournament ${tournamentId} current season: ${seasonId} (year ${sorted[0]?.year})`)
+  // Try IceHockeyApi first (specifically for hockey), fallback to AllSportsApi2
+  for (const fetchFn of [
+    () => iceHockeyGet(`/api/tournament/${tournamentId}/seasons`),
+    () => allSportsGetPath(`/api/tournament/${tournamentId}/seasons`),
+  ]) {
+    try {
+      const data = await fetchFn()
+      const seasons = data?.seasons || []
+      if (!seasons.length) continue
+      const sorted = seasons.sort((a, b) => {
+        const yearDiff = (Number(b.year) || 0) - (Number(a.year) || 0)
+        return yearDiff !== 0 ? yearDiff : (Number(b.id) || 0) - (Number(a.id) || 0)
+      })
+      const seasonId = sorted[0]?.id
+      if (seasonId) {
+        seasonIdCache.set(tournamentId, { seasonId, ts: Date.now() })
+        console.log(`[matches/hockey] T=${tournamentId} current season: ${seasonId} (year ${sorted[0]?.year})`)
+        return seasonId
+      }
+    } catch (err) {
+      console.warn(`[matches/hockey] fetchCurrentSeasonId(${tournamentId}) attempt failed:`, err.message)
     }
-    return seasonId || null
-  } catch (err) {
-    console.warn(`[matches/hockey] fetchCurrentSeasonId(${tournamentId}) failed:`, err.message)
-    return null
   }
+  return null
 }
 
 // ── NHL free API helper ───────────────────────────────────────────────────────
@@ -414,15 +420,29 @@ router.get('/hockey', async (req, res) => {
     const validTournaments = tournamentsWithSeasons.filter(t => t.seasonId)
     console.log(`[matches/hockey] tournaments with valid seasons: ${validTournaments.map(t => `${t.league}(${t.seasonId})`).join(', ')}`)
 
-    const results = await Promise.allSettled(
-      validTournaments.map(t =>
-        allSportsGetPath(`/api/tournament/${t.id}/season/${t.seasonId}/matches/next/0`)
-          .then(data => {
-            const evts = data?.events || []
-            console.log(`[matches/hockey] T=${t.id} "${t.league}" s=${t.seasonId}: ${evts.length} events`)
+    // Try IceHockeyApi first for match fetching (hockey-specific API), fallback AllSportsApi2
+    async function fetchTournamentMatches(t) {
+      const path = `/api/tournament/${t.id}/season/${t.seasonId}/matches/next/0`
+      for (const [label, fetchFn] of [
+        ['icehockeyapi', () => iceHockeyGet(path)],
+        ['allsportsapi2', () => allSportsGetPath(path)],
+      ]) {
+        try {
+          const data = await fetchFn()
+          const evts = data?.events || []
+          if (evts.length > 0 || label === 'allsportsapi2') {
+            console.log(`[matches/hockey] T=${t.id} "${t.league}" s=${t.seasonId} via ${label}: ${evts.length} events`)
             return { ...t, events: evts }
-          })
-      )
+          }
+        } catch (err) {
+          console.warn(`[matches/hockey] ${label} T=${t.id} failed: ${err.message}`)
+        }
+      }
+      return { ...t, events: [] }
+    }
+
+    const results = await Promise.allSettled(
+      validTournaments.map(t => fetchTournamentMatches(t))
     )
 
     for (const r of results) {
@@ -920,7 +940,76 @@ router.get('/esports', async (req, res) => {
 router.get('/hockey-cache-reset', (req, res) => {
   hockeyCache = { data: null, ts: 0 }
   hockeyOddsCache = { data: null, ts: 0 }
-  res.json({ ok: true, message: 'Hockey cache cleared — next /matches/hockey will re-fetch' })
+  seasonIdCache.clear()
+  res.json({ ok: true, message: 'Hockey cache + season ID cache cleared — next /matches/hockey will re-fetch' })
+})
+
+// GET /matches/hockey-debug — raw API diagnostic: season IDs + first events per tournament
+router.get('/hockey-debug', async (req, res) => {
+  if (!process.env.RAPIDAPI_KEY) return res.json({ error: 'RAPIDAPI_KEY not set' })
+
+  const result = {
+    ts: new Date().toISOString(),
+    tournaments: [],
+  }
+
+  for (const t of HOCKEY_TOURNAMENTS_BASE) {
+    const entry = { id: t.id, league: t.league, seasonId: null, seasonSource: null, eventsCount: 0, sampleEvents: [], error: null }
+
+    // Try IceHockeyApi seasons
+    let seasonId = null
+    try {
+      const data = await iceHockeyGet(`/api/tournament/${t.id}/seasons`)
+      const seasons = (data?.seasons || []).sort((a, b) =>
+        (Number(b.year) || 0) - (Number(a.year) || 0) || (Number(b.id) || 0) - (Number(a.id) || 0)
+      )
+      entry.iceHockeySeasons = seasons.slice(0, 3).map(s => ({ id: s.id, year: s.year, name: s.name }))
+      if (seasons[0]?.id) { seasonId = seasons[0].id; entry.seasonSource = 'icehockeyapi' }
+    } catch (err) { entry.iceHockeyError = err.message }
+
+    // Fallback to AllSportsApi2
+    if (!seasonId) {
+      try {
+        const data = await allSportsGetPath(`/api/tournament/${t.id}/seasons`)
+        const seasons = (data?.seasons || []).sort((a, b) =>
+          (Number(b.year) || 0) - (Number(a.year) || 0) || (Number(b.id) || 0) - (Number(a.id) || 0)
+        )
+        entry.allSportsSeasons = seasons.slice(0, 3).map(s => ({ id: s.id, year: s.year, name: s.name }))
+        if (seasons[0]?.id) { seasonId = seasons[0].id; entry.seasonSource = 'allsportsapi2' }
+      } catch (err) { entry.allSportsError = err.message }
+    }
+
+    entry.seasonId = seasonId
+
+    // Try to fetch events if we have a season ID
+    if (seasonId) {
+      try {
+        const data = await iceHockeyGet(`/api/tournament/${t.id}/season/${seasonId}/matches/next/0`)
+        const evts = data?.events || []
+        entry.eventsCount = evts.length
+        entry.sampleEvents = evts.slice(0, 3).map(e => ({
+          id: e.id,
+          home: e.homeTeam?.name,
+          away: e.awayTeam?.name,
+          status: e.status?.type,
+          ts: e.startTimestamp,
+        }))
+        entry.iceHockeyMatchesRaw = data?.error || null
+      } catch (err) { entry.matchFetchError = err.message }
+
+      // Also try AllSportsApi2 for comparison
+      try {
+        const data2 = await allSportsGetPath(`/api/tournament/${t.id}/season/${seasonId}/matches/next/0`)
+        const evts2 = data2?.events || []
+        entry.eventsCountAllSports = evts2.length
+        entry.allSportsMatchError = data2?.error || null
+      } catch (err) { entry.allSportsMatchFetchError = err.message }
+    }
+
+    result.tournaments.push(entry)
+  }
+
+  res.json(result)
 })
 
 // GET /matches/esports-debug — test PandaScore connection + inspect odds fields
