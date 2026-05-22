@@ -96,6 +96,42 @@ router.get('/live', async (req, res) => {
   }
 })
 
+// ── Sofascore direct API (free, no key, no quota) ────────────────────────────
+// Same data that AllSportsApi2 mirrors. Use as fallback when RapidAPI quota exceeded.
+// Path format: /api/v1/unique-tournament/{id}/season/{sid}/events/next/0
+function sofascoreGet(path) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.sofascore.com',
+      path,
+      method: 'GET',
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://www.sofascore.com/',
+        'Origin': 'https://www.sofascore.com',
+        'Cache-Control': 'no-cache',
+      },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => {
+        if (res.statusCode === 403 || res.statusCode === 429) {
+          reject(new Error(`Sofascore HTTP ${res.statusCode}`)); return
+        }
+        try { resolve(JSON.parse(data)) }
+        catch { reject(new Error('JSON parse error')) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    req.end()
+  })
+}
+
 // ── AllSportsApi helper (direct path) ────────────────────────────────────────
 // Uses Sofascore-mirrored tournament endpoints. Format:
 //   /api/tournament/{id}/season/{sid}/matches/next/0
@@ -163,45 +199,61 @@ function iceHockeyGet(path) {
 }
 
 // ── Hockey tournament config ──────────────────────────────────────────────────
-// Season IDs are fetched DYNAMICALLY — no hardcoding needed
+// fallbackSeasonId = hardcoded 2025/26 season IDs (from Sofascore) used when APIs are down
 const HOCKEY_TOURNAMENTS_BASE = [
-  { id: 3,    league: 'ИИХФ · Чемпионат мира' },
-  { id: 268,  league: 'КХЛ' },
-  { id: 1159, league: 'МХЛ' },
-  { id: 1141, league: 'ВХЛ' },
+  { id: 3,    league: 'ИИХФ · Чемпионат мира', fallbackSeasonId: 81043 },
+  { id: 268,  league: 'КХЛ',                    fallbackSeasonId: 77998 },
+  { id: 1159, league: 'МХЛ',                    fallbackSeasonId: 79945 },
+  { id: 1141, league: 'ВХЛ',                    fallbackSeasonId: 78633 },
 ]
 
 // Cache season IDs 24h — they don't change within a day, saves daily quota
 const seasonIdCache = new Map()   // tournamentId → { seasonId, ts }
 const SEASON_ID_TTL = 24 * 60 * 60 * 1000
 
-// Use IceHockeyApi (hockey-specific) for season ID — more reliable than AllSportsApi2 for hockey
-async function fetchCurrentSeasonId(tournamentId) {
+// Fetch current season ID: IceHockeyApi → AllSportsApi2 → Sofascore direct → hardcoded fallback
+async function fetchCurrentSeasonId(tournamentId, fallbackSeasonId) {
   const cached = seasonIdCache.get(tournamentId)
   if (cached && Date.now() - cached.ts < SEASON_ID_TTL) return cached.seasonId
 
-  // Try IceHockeyApi first (specifically for hockey), fallback to AllSportsApi2
-  for (const fetchFn of [
-    () => iceHockeyGet(`/api/tournament/${tournamentId}/seasons`),
-    () => allSportsGetPath(`/api/tournament/${tournamentId}/seasons`),
-  ]) {
+  // Sort seasons by id desc (highest id = most recent) then year desc
+  const pickLatest = (seasons) => {
+    if (!seasons?.length) return null
+    return seasons.sort((a, b) => {
+      const yearA = String(a.year || '').replace('/', '').replace('-', '')
+      const yearB = String(b.year || '').replace('/', '').replace('-', '')
+      const yearDiff = (Number(yearB) || 0) - (Number(yearA) || 0)
+      return yearDiff !== 0 ? yearDiff : (Number(b.id) || 0) - (Number(a.id) || 0)
+    })[0]?.id || null
+  }
+
+  const sources = [
+    // IceHockeyApi — same RAPIDAPI_KEY, hockey-specific host (endpoint may not exist)
+    ['icehockeyapi', () => iceHockeyGet(`/api/tournament/${tournamentId}/seasons`)],
+    // AllSportsApi2 — primary Sofascore mirror (has daily quota limit)
+    ['allsportsapi2', () => allSportsGetPath(`/api/tournament/${tournamentId}/seasons`)],
+    // Sofascore direct — free, no quota, original data source
+    ['sofascore',    () => sofascoreGet(`/api/v1/unique-tournament/${tournamentId}/seasons`)],
+  ]
+
+  for (const [label, fetchFn] of sources) {
     try {
       const data = await fetchFn()
-      const seasons = data?.seasons || []
-      if (!seasons.length) continue
-      const sorted = seasons.sort((a, b) => {
-        const yearDiff = (Number(b.year) || 0) - (Number(a.year) || 0)
-        return yearDiff !== 0 ? yearDiff : (Number(b.id) || 0) - (Number(a.id) || 0)
-      })
-      const seasonId = sorted[0]?.id
+      const seasonId = pickLatest(data?.seasons || data?.uniqueTournamentSeasons || [])
       if (seasonId) {
         seasonIdCache.set(tournamentId, { seasonId, ts: Date.now() })
-        console.log(`[matches/hockey] T=${tournamentId} current season: ${seasonId} (year ${sorted[0]?.year})`)
+        console.log(`[matches/hockey] T=${tournamentId} season ${seasonId} via ${label}`)
         return seasonId
       }
     } catch (err) {
-      console.warn(`[matches/hockey] fetchCurrentSeasonId(${tournamentId}) attempt failed:`, err.message)
+      console.warn(`[matches/hockey] fetchCurrentSeasonId(${tournamentId}) ${label} failed: ${err.message}`)
     }
+  }
+
+  // Last resort: use hardcoded 2025/26 season ID
+  if (fallbackSeasonId) {
+    console.warn(`[matches/hockey] T=${tournamentId} using hardcoded fallback season ${fallbackSeasonId}`)
+    return fallbackSeasonId
   }
   return null
 }
@@ -412,7 +464,7 @@ router.get('/hockey', async (req, res) => {
     // Fetch current season IDs for all tournaments in parallel
     const tournamentsWithSeasons = await Promise.all(
       HOCKEY_TOURNAMENTS_BASE.map(async t => {
-        const seasonId = await fetchCurrentSeasonId(t.id)
+        const seasonId = await fetchCurrentSeasonId(t.id, t.fallbackSeasonId)
         return { ...t, seasonId }
       })
     )
@@ -420,17 +472,19 @@ router.get('/hockey', async (req, res) => {
     const validTournaments = tournamentsWithSeasons.filter(t => t.seasonId)
     console.log(`[matches/hockey] tournaments with valid seasons: ${validTournaments.map(t => `${t.league}(${t.seasonId})`).join(', ')}`)
 
-    // Try IceHockeyApi first for match fetching (hockey-specific API), fallback AllSportsApi2
+    // Fetch matches: IceHockeyApi → AllSportsApi2 → Sofascore direct (free fallback)
     async function fetchTournamentMatches(t) {
-      const path = `/api/tournament/${t.id}/season/${t.seasonId}/matches/next/0`
+      const rapidPath = `/api/tournament/${t.id}/season/${t.seasonId}/matches/next/0`
+      const sofaPath  = `/api/v1/unique-tournament/${t.id}/season/${t.seasonId}/events/next/0`
       for (const [label, fetchFn] of [
-        ['icehockeyapi', () => iceHockeyGet(path)],
-        ['allsportsapi2', () => allSportsGetPath(path)],
+        ['icehockeyapi', () => iceHockeyGet(rapidPath)],
+        ['allsportsapi2', () => allSportsGetPath(rapidPath)],
+        ['sofascore',    () => sofascoreGet(sofaPath)],
       ]) {
         try {
           const data = await fetchFn()
           const evts = data?.events || []
-          if (evts.length > 0 || label === 'allsportsapi2') {
+          if (evts.length > 0 || label === 'sofascore') {
             console.log(`[matches/hockey] T=${t.id} "${t.league}" s=${t.seasonId} via ${label}: ${evts.length} events`)
             return { ...t, events: evts }
           }
@@ -944,34 +998,32 @@ router.get('/hockey-cache-reset', (req, res) => {
   res.json({ ok: true, message: 'Hockey cache + season ID cache cleared — next /matches/hockey will re-fetch' })
 })
 
-// GET /matches/hockey-debug — test IceHockeyApi endpoints one-by-one with delay
+// GET /matches/hockey-debug — test Sofascore direct API + current season IDs
 router.get('/hockey-debug', async (req, res) => {
-  if (!process.env.RAPIDAPI_KEY) return res.json({ error: 'RAPIDAPI_KEY not set' })
+  const result = { ts: new Date().toISOString(), tournaments: [] }
 
-  const today = new Date().toISOString().slice(0, 10)
-  const result = { ts: new Date().toISOString(), today, endpointTests: [] }
-  const delay = ms => new Promise(r => setTimeout(r, ms))
-
-  // Only test the "existed" paths (returned rate-limit, not NOT_FOUND) — sequentially with pause
-  const candidatePaths = [
-    `/api/hockey/schedule/date/${today}`,
-    `/api/hockey/livescores`,
-    `/api/hockey/leagues`,
-    `/api/hockey/tournaments`,
-    `/api/hockey/fixtures?date=${today}`,
-  ]
-
-  for (const path of candidatePaths) {
-    await delay(700)  // 700ms between requests — stay under per-second rate limit
+  for (const t of HOCKEY_TOURNAMENTS_BASE) {
+    const entry = { id: t.id, league: t.league, fallbackSeasonId: t.fallbackSeasonId }
     try {
-      const data = await iceHockeyGet(path)
-      const raw = JSON.stringify(data).slice(0, 800)
-      const isError = raw.includes('does not exist')
-      const isQuota = raw.includes('exceeded') || raw.includes('rate limit')
-      result.endpointTests.push({ path, status: isError ? 'NOT_FOUND' : isQuota ? 'RATE_LIMIT' : 'OK', raw })
+      const seasonsData = await sofascoreGet(`/api/v1/unique-tournament/${t.id}/seasons`)
+      const seasons = seasonsData?.seasons || []
+      entry.sofascoreSeasons = seasons.slice(0, 3).map(s => ({ id: s.id, year: s.year }))
+      const seasonId = seasons[0]?.id || t.fallbackSeasonId
+      entry.resolvedSeasonId = seasonId
+
+      const matchesData = await sofascoreGet(`/api/v1/unique-tournament/${t.id}/season/${seasonId}/events/next/0`)
+      const evts = matchesData?.events || []
+      entry.eventsCount = evts.length
+      entry.sampleEvents = evts.slice(0, 3).map(e => ({
+        home: e.homeTeam?.name,
+        away: e.awayTeam?.name,
+        status: e.status?.type,
+        ts: e.startTimestamp,
+      }))
     } catch (err) {
-      result.endpointTests.push({ path, status: 'ERROR', error: err.message })
+      entry.error = err.message
     }
+    result.tournaments.push(entry)
   }
 
   res.json(result)
