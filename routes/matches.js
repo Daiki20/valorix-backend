@@ -11,7 +11,7 @@ let hockeyCache = { data: null, ts: 0 }
 let basketballCache = { data: null, ts: 0 }
 const UPCOMING_TTL = 15 * 60 * 1000
 const LIVE_TTL = 60 * 1000
-const HOCKEY_TTL = 3 * 60 * 60 * 1000   // 3 hours — preserve AllSportsApi2 daily quota
+const HOCKEY_TTL = 60 * 60 * 1000   // 1 hour — refresh more often during active tournaments
 const BASKETBALL_TTL = 6 * 60 * 60 * 1000
 
 function sstatsGet(path, params = {}) {
@@ -1115,7 +1115,7 @@ function parsePinnacleMarkets(items) {
 }
 
 let pinnacleOddsCache = { data: null, ts: 0 }
-const PINNACLE_ODDS_TTL = 6 * 60 * 60 * 1000  // 6 hours → ~120 req/month (well within 550 free limit)
+const PINNACLE_ODDS_TTL = 2 * 60 * 60 * 1000  // 2 hours — IIHF/NHL odds change frequently
 
 async function fetchPinnacleHockeyOdds() {
   if (pinnacleOddsCache.data && Date.now() - pinnacleOddsCache.ts < PINNACLE_ODDS_TTL) {
@@ -1123,51 +1123,33 @@ async function fetchPinnacleHockeyOdds() {
   }
   if (!process.env.RAPIDAPI_KEY) return {}
 
-  const sportId    = await getPinnacleHockeySportId()
-  const leagueIds  = await getPinnacleHockeyLeagueIds()
-
+  const sportId = await getPinnacleHockeySportId()
   const merged = {}
-  const leaguesToFetch = [
-    { id: leagueIds.iihfWC, label: 'IIHF WC' },
-    { id: leagueIds.khl,    label: 'KHL' },
-    { id: leagueIds.nhl,    label: 'NHL' },
-  ].filter(l => l.id)   // skip leagues we couldn't discover
 
-  // If league discovery failed, try fetching ALL hockey markets at once
-  if (!leaguesToFetch.length) {
-    try {
-      const data = await pinnacleGet(
-        `/kit/v1/markets?sport_id=${sportId}&is_have_odds=true&event_type=prematch`
-      )
-      const items = data?.events ?? data?.markets ?? data?.data ?? (Array.isArray(data) ? data : [])
-      console.log(`[pinnacle] all hockey: ${items.length} events`)
-      const parsed = parsePinnacleMarkets(items)
-      const count = Math.floor(Object.keys(parsed).length / 2)
-      console.log(`[pinnacle/odds] all hockey: ${count} matches`)
-      Object.assign(merged, parsed)
-    } catch (err) {
-      console.warn('[pinnacle/odds] all-hockey fetch failed:', err.message)
-    }
-  } else {
-    for (const { id, label } of leaguesToFetch) {
-      try {
-        const qs = `/kit/v1/markets?sport_id=${sportId}&league_id=${id}&is_have_odds=true&event_type=prematch`
-        const data = await pinnacleGet(qs)
-        // Response shape: { sport_id, sport_name, last, last_call, events: [...] }
-        const items = data?.events ?? data?.markets ?? data?.data ?? (Array.isArray(data) ? data : [])
-        const parsed = parsePinnacleMarkets(items)
-        const count = Math.floor(Object.keys(parsed).length / 2)
-        console.log(`[pinnacle/odds] ${label} (league=${id}): ${count} matches`)
-        Object.assign(merged, parsed)
-      } catch (err) {
-        console.warn(`[pinnacle/odds] ${label} failed:`, err.message)
-      }
-    }
+  // Fetch ALL hockey prematch events in one request (no league_id filter).
+  // Per-league queries are unreliable: when a league has no active prematch events,
+  // Pinnacle falls back to returning Australian IHL data for every league query.
+  // One all-sport request is also cheaper (1 API call vs 3).
+  try {
+    const data = await pinnacleGet(
+      `/kit/v1/markets?sport_id=${sportId}&is_have_odds=true&event_type=prematch`
+    )
+    const items = data?.events ?? data?.markets ?? data?.data ?? (Array.isArray(data) ? data : [])
+    console.log(`[pinnacle/odds] all hockey prematch: ${items.length} raw events`)
+    const parsed = parsePinnacleMarkets(items)
+    Object.assign(merged, parsed)
+  } catch (err) {
+    console.warn('[pinnacle/odds] all-hockey fetch failed:', err.message)
   }
 
-  // Log first match for format debugging
+  // Log sample for format debugging
   const keys = Object.keys(merged)
-  if (keys.length) console.log(`[pinnacle/odds] sample: ${keys[0]} → ${JSON.stringify(merged[keys[0]])}`)
+  if (keys.length) {
+    // Show first 5 team names so we can verify what leagues are included
+    const sample5 = keys.slice(0, 10).filter((_, i) => i % 2 === 0).join(', ')
+    console.log(`[pinnacle/odds] sample teams: ${sample5}`)
+    console.log(`[pinnacle/odds] sample entry: ${keys[0]} → ${JSON.stringify(merged[keys[0]])}`)
+  }
 
   pinnacleOddsCache = { data: merged, ts: Date.now() }
   console.log(`[pinnacle/odds] cached ${Math.floor(keys.length / 2)} total matches`)
