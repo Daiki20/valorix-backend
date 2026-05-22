@@ -845,6 +845,72 @@ function extractOddsApiOdds(event) {
 
 const _normOdds = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
 
+// ── Russian → English team name aliases ───────────────────────────────────────
+// AllSports API returns Russian names for KHL/MHL/VHL clubs;
+// Pinnacle uses English transliterations. Key = Russian lowercase no-spaces.
+const HOCKEY_TEAM_ALIASES = {
+  // KHL
+  'цска': 'cska', 'цскамосква': 'cska',
+  'ска': 'ska', 'скаспб': 'ska', 'скасанктпетербург': 'ska',
+  'динамо': 'dynamo', 'динамомосква': 'dynamomoscow',
+  'динамоминск': 'dynamominsk', 'динаморига': 'dynamoriga',
+  'спартак': 'spartak', 'спартакмосква': 'spartak',
+  'локомотив': 'lokomotiv', 'локомотивярославль': 'lokomotiv',
+  'авангард': 'avangard', 'авангардомск': 'avangard',
+  'металлург': 'metallurg',
+  'металлургмагнитогорск': 'metallurg', 'металлургмг': 'metallurg',
+  'акбарс': 'akbars', 'акбарсказань': 'akbars',
+  'салаватюлаев': 'salavatуlaev',
+  'нефтехимик': 'neftekhimik', 'нефтехимикнижнекамск': 'neftekhimik',
+  'трактор': 'traktor', 'тракторчелябинск': 'traktor',
+  'барыс': 'barys', 'барысастана': 'barys', 'барыснурсултан': 'barys',
+  'северсталь': 'severstal', 'северстальчерепловец': 'severstal',
+  'автомобилист': 'avtomobilist', 'автомобилистекатеринбург': 'avtomobilist',
+  'витязь': 'vityaz', 'витязьподольск': 'vityaz',
+  'торпедо': 'torpedo', 'торпедонн': 'torpedo', 'торпедонижнийновгород': 'torpedo',
+  'амур': 'amur', 'амурхабаровск': 'amur',
+  'сибирь': 'sibir', 'сибирьновосибирск': 'sibir',
+  'куньлунь': 'kunlun', 'куньлуньредстар': 'kunlun',
+  'адмирал': 'admiral', 'адмиралвладивосток': 'admiral',
+  'лада': 'lada', 'ладатольятти': 'lada',
+  // VHL
+  'химик': 'khimik', 'химиквоскресенск': 'khimik',
+  'югра': 'yugra', 'юграхантымансийск': 'yugra',
+  'рубин': 'rubin', 'рубинтюмень': 'rubin',
+  'молот': 'molot', 'молотприкамье': 'molot',
+  'ижсталь': 'izhstal',
+  'буран': 'buran', 'буранворонеж': 'buran',
+  'зауралье': 'zauralye', 'зауральекурган': 'zauralye',
+  'горняк': 'gornyak', 'горняккузбасс': 'gornyak',
+  'кристалл': 'kristall', 'кристаллсаратов': 'kristall',
+  'омскиехоккеисты': 'omsk',
+  // MHL
+  'локо': 'loko', 'локоярославль': 'lokoyaroslavl',
+  'краснаяармия': 'redarmy',
+  'стальныелисы': 'steelfoxes',
+  'гренадеры': 'grenadery',
+  'атланты': 'atlants',
+  'мхкдинамо': 'dynamojuniors', 'мхкдинамомосква': 'dynamojuniors',
+  'мхкцска': 'cskajuniors',
+  'мхкска': 'skajuniors',
+  'спартакмхк': 'spartakjuniors',
+}
+
+// Normalize a team name for odds matching.
+// Handles Russian (Cyrillic) club names via alias lookup → English.
+// Falls through to _normOdds for already-English names (NHL etc.).
+function normalizeTeamName(name) {
+  if (!name) return ''
+  // Build Cyrillic key: lowercase, strip spaces/hyphens/dots
+  const cyrKey = name.toLowerCase().replace(/[\s\-\.«»"']/g, '')
+  if (HOCKEY_TEAM_ALIASES[cyrKey]) return HOCKEY_TEAM_ALIASES[cyrKey]
+  // Partial Cyrillic key (first word only) — handles "Химик Воскресенск" → "химик" → found
+  const firstWord = cyrKey.split(/[^а-яёa-z0-9]/)[0]
+  if (firstWord && HOCKEY_TEAM_ALIASES[firstWord]) return HOCKEY_TEAM_ALIASES[firstWord]
+  // Fall through: English names (NHL, IIHF) work fine with _normOdds
+  return _normOdds(name)
+}
+
 // Build lookup: normalizedTeamName → { homeOdds, awayOdds, homeNorm, awayNorm }
 function buildOddsLookup(events) {
   const map = {}
@@ -867,9 +933,10 @@ function buildOddsLookup(events) {
 // IMPORTANT: requires BOTH teams to match the same entry to prevent false positives
 function lookupOdds(psHome, psAway, oddsMap) {
   if (!oddsMap || !Object.keys(oddsMap).length) return null
-  const hN = _normOdds(psHome)
-  const aN = _normOdds(psAway)
-  // Guard: if names normalized to empty (e.g. Cyrillic), skip — avoids false matches
+  // normalizeTeamName handles Russian KHL/MHL/VHL names via alias map;
+  // falls through to _normOdds for English (NHL, IIHF) names
+  const hN = normalizeTeamName(psHome)
+  const aN = normalizeTeamName(psAway)
   if (!hN || !aN) return null
 
   // 1. Both teams exact match → same entry = perfect
