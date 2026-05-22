@@ -11,7 +11,7 @@ let basketballCache = { data: null, ts: 0 }
 let esportsCache = { data: null, ts: 0 }
 const UPCOMING_TTL = 15 * 60 * 1000
 const LIVE_TTL = 60 * 1000
-const HOCKEY_TTL = 6 * 60 * 60 * 1000   // 6 hours — saves RapidAPI quota (100 req/day BASIC)
+const HOCKEY_TTL = 30 * 60 * 1000   // 30 min — allow fresh data while debugging
 const BASKETBALL_TTL = 6 * 60 * 60 * 1000
 const ESPORTS_TTL = 60 * 60 * 1000       // 1 hour
 
@@ -374,29 +374,33 @@ router.get('/hockey', async (req, res) => {
     console.error('[matches/hockey] NHL error:', err.message)
   }
 
-  // 2. AllSportsApi — date-based fetch (no season IDs needed — works for any league/tournament)
-  // Also fetch tomorrow to catch games in different time zones
+  // 2. IceHockeyApi — date-based fetch (no season IDs needed, covers all active leagues)
+  // Tries today + tomorrow; falls back to AllSportsApi2 tournament list on failure
   if (process.env.RAPIDAPI_KEY) {
-    const todayStr  = toAllSportsDate(todayDate)
-    const tomorrow  = new Date(todayDate); tomorrow.setDate(tomorrow.getDate() + 1)
+    const todayStr    = toAllSportsDate(todayDate)
+    const tomorrow    = new Date(todayDate); tomorrow.setDate(tomorrow.getDate() + 1)
     const tomorrowStr = toAllSportsDate(tomorrow.toISOString().slice(0, 10))
 
-    const [todayRes, tomorrowRes] = await Promise.allSettled([
-      allSportsGetPath(`/api/hockey/matches/${todayStr}`),
-      allSportsGetPath(`/api/hockey/matches/${tomorrowStr}`),
+    // Primary: IceHockeyApi date endpoint
+    const [iceTodayRes, iceTomorrowRes] = await Promise.allSettled([
+      iceHockeyGet(`/api/hockey/matches/${todayStr}`),
+      iceHockeyGet(`/api/hockey/matches/${tomorrowStr}`),
     ])
 
-    for (const r of [todayRes, tomorrowRes]) {
+    let iceHockeyGotData = false
+    for (const r of [iceTodayRes, iceTomorrowRes]) {
       if (r.status !== 'fulfilled') {
-        console.error('[matches/hockey] AllSportsApi date fetch rejected:', r.reason?.message)
+        console.warn('[matches/hockey] IceHockeyApi date fetch failed:', r.reason?.message)
         continue
       }
-      const events = r.value?.events || r.value?.results || r.value?.matches || []
-      console.log(`[matches/hockey] AllSportsApi date: ${events.length} raw events`)
+      const raw = r.value
+      const events = raw?.events || raw?.results || raw?.matches || (Array.isArray(raw) ? raw : [])
+      console.log(`[matches/hockey] IceHockeyApi date: ${events.length} raw events, keys=${Object.keys(raw || {}).join(',')}`)
+      if (events.length > 0) iceHockeyGotData = true
       let added = 0
       for (const event of events) {
-        const leagueName = event.tournament?.name || event.league?.name ||
-          event.homeTeam?.tournament?.name || ''
+        const leagueName = event.tournament?.name || event.category?.name ||
+          event.league?.name || ''
         if (!isImportantHockeyLeague(leagueName)) continue
         const statusType = (event.status?.type || '').toLowerCase()
         if (statusType === 'finished') continue
@@ -411,9 +415,66 @@ router.get('/hockey', async (req, res) => {
         games.push(normalized)
         added++
       }
-      console.log(`[matches/hockey] AllSportsApi date added: ${added}`)
+      if (events.length > 0) console.log(`[matches/hockey] IceHockeyApi date added: ${added}/${events.length}`)
     }
-    console.log(`[matches/hockey] AllSportsApi total: ${games.length} games`)
+
+    // Fallback: AllSportsApi2 date endpoint (if IceHockeyApi returned nothing)
+    if (!iceHockeyGotData) {
+      console.log('[matches/hockey] IceHockeyApi returned no data — trying AllSportsApi2 date endpoint')
+      const [as2Today, as2Tomorrow] = await Promise.allSettled([
+        allSportsGetPath(`/api/hockey/matches/${todayStr}`),
+        allSportsGetPath(`/api/hockey/matches/${tomorrowStr}`),
+      ])
+      for (const r of [as2Today, as2Tomorrow]) {
+        if (r.status !== 'fulfilled') continue
+        const events = r.value?.events || r.value?.results || r.value?.matches || []
+        console.log(`[matches/hockey] AllSportsApi2 date: ${events.length} raw events`)
+        for (const event of events) {
+          const leagueName = event.tournament?.name || event.league?.name || ''
+          if (!isImportantHockeyLeague(leagueName)) continue
+          const statusType = (event.status?.type || '').toLowerCase()
+          if (statusType === 'finished') continue
+          const home = event.homeTeam?.name || ''
+          const away = event.awayTeam?.name || ''
+          if (!home || !away) continue
+          if (games.some(g => g.home === translateKHL(home) && g.away === translateKHL(away))) continue
+          const tournamentId = event.tournament?.uniqueTournament?.id || event.tournament?.id || null
+          const seasonId = event.season?.id || null
+          const normalized = normalizeSofascoreMatch(event, leagueName, tournamentId, seasonId)
+          if (!normalized) continue
+          games.push(normalized)
+        }
+      }
+    }
+
+    // Final fallback: tournament-based (hardcoded season IDs — used as last resort)
+    if (games.length <= nhlCount) {
+      console.log('[matches/hockey] Date endpoints returned nothing — falling back to tournament-based')
+      const FALLBACK_TOURNAMENTS = [
+        { id: 3,    seasonId: 81043, league: 'ИИХФ · Чемпионат мира' },
+        { id: 268,  seasonId: 77998, league: 'КХЛ' },
+        { id: 1159, seasonId: 79945, league: 'МХЛ' },
+        { id: 1141, seasonId: 78633, league: 'ВХЛ' },
+      ]
+      const fbResults = await Promise.allSettled(
+        FALLBACK_TOURNAMENTS.map(t =>
+          allSportsGetPath(`/api/tournament/${t.id}/season/${t.seasonId}/matches/next/0`)
+            .then(data => ({ ...t, events: data?.events || [] }))
+        )
+      )
+      for (const r of fbResults) {
+        if (r.status !== 'fulfilled') continue
+        const { league, events, id: tournamentId, seasonId } = r.value
+        for (const event of events) {
+          const normalized = normalizeSofascoreMatch(event, league, tournamentId, seasonId)
+          if (!normalized) continue
+          if (games.some(g => g.home === normalized.home && g.away === normalized.away)) continue
+          games.push(normalized)
+        }
+      }
+    }
+
+    console.log(`[matches/hockey] total after all sources: ${games.length} games`)
   } else {
     console.log('[matches/hockey] RAPIDAPI_KEY not set — only NHL free API available')
   }
