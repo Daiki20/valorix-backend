@@ -1013,14 +1013,22 @@ function parsePinnacleMarkets(items) {
     const away = item.away ?? item.away_team ?? item.teams?.away?.name ?? item.awayTeam
     if (!home || !away) continue
 
-    // Extract moneyline odds — try every known path
-    // Pinnacle wrapper: odds are in item.periods.num_N.money_line (N varies: 0, 6, etc.)
+    // Extract moneyline odds
+    // Pinnacle wrapper stores odds in item.periods.num_N.money_line
+    // Hockey uses description="Regulation Time" (number=6); fallback to first period
     let hOdds = null, aOdds = null
     const findPeriodMl = () => {
-      for (const p of Object.values(item.periods || {})) {
+      const periods = Object.values(item.periods || {})
+      if (!periods.length) return null
+      // Priority: Regulation Time period (standard 3-period hockey result)
+      const regTime = periods.find(p => p.description === 'Regulation Time')
+      if (regTime?.money_line) return regTime.money_line
+      // Fallback: first period with money_line
+      for (const p of periods) {
         if (p.money_line) return p.money_line
       }
-      return null
+      // Last resort: first period (money_line may be null — checked below)
+      return periods[0]?.money_line ?? null
     }
     const ml = item.money_line ?? item.moneyline ?? findPeriodMl()
            ?? item.odds?.moneyline ?? item.markets?.moneyline
@@ -1032,13 +1040,7 @@ function parsePinnacleMarkets(items) {
     if (!hOdds) hOdds = parseFloat(item.homeOdds ?? item.home_odds)
     if (!aOdds) aOdds = parseFloat(item.awayOdds ?? item.away_odds)
 
-    if (!hOdds || !aOdds || hOdds < 1 || aOdds < 1) {
-      // Debug: show structure of events we can't parse
-      const periodKeys = Object.keys(item.periods || {})
-      const firstPeriod = periodKeys.length ? item.periods[periodKeys[0]] : null
-      console.log(`[pinnacle] no odds for ${home} vs ${away}: periods=${periodKeys.join(',')}, firstPeriod keys=${Object.keys(firstPeriod||{}).join(',')}, firstPeriod=${JSON.stringify(firstPeriod).slice(0,300)}`)
-      continue
-    }
+    if (!hOdds || !aOdds || hOdds < 1 || aOdds < 1) continue
 
     const hN = _normOdds(home)
     const aN = _normOdds(away)
