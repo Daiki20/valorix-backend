@@ -940,6 +940,36 @@ router.post('/purchase', authenticate, (req, res) => {
   res.json({ purchased: true, coins: updated.coins, ...JSON.parse(row.data) })
 })
 
+// ── GET /express/debug-stats (admin) — проверить работу API статистики ──────
+router.get('/debug-stats', authenticate, async (req, res) => {
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Только для администраторов' })
+  const result = { iihf: null, nhl: null, iihfRaw: null, nhlRaw: null }
+
+  // IIHF standings raw
+  try {
+    const sid = seasonIdCacheEx.get(3)?.seasonId || 81043
+    const data = await sofascoreGetExpress(`/api/v1/unique-tournament/3/season/${sid}/standings/total`)
+    result.iihfRaw = JSON.stringify(data).slice(0, 1000)
+    result.iihf = await fetchIIHFGroupStandings(sid)
+  } catch (err) {
+    result.iihf = `ERROR: ${err.message}`
+    result.iihfRaw = err.message
+  }
+
+  // NHL standings raw
+  try {
+    const data = await httpsGet('https://api-web.nhle.com/v1/standings/now')
+    result.nhlRaw = JSON.stringify((data?.standings || []).slice(0, 2)).slice(0, 800)
+    result.nhl = await fetchNHLStandingsMap()
+    if (result.nhl) result.nhlSample = Object.entries(result.nhl).slice(0, 5)
+  } catch (err) {
+    result.nhl = `ERROR: ${err.message}`
+    result.nhlRaw = err.message
+  }
+
+  res.json(result)
+})
+
 // ── POST /express/generate (admin) ───────────────────────────────────────────
 router.post('/generate', authenticate, async (req, res) => {
   if (!req.user.is_admin) return res.status(403).json({ error: 'Только для администраторов' })
