@@ -175,10 +175,10 @@ router.get('/api-status', async (req, res) => {
       httpProbe({ hostname: 'api-web.nhle.com', path: '/v1/standings/now', method: 'GET' })
     ),
 
-    // Sofascore — тот же эндпоинт что используем (ИИХФ сезоны)
+    // Sofascore — тот же эндпоинт что используем для матчей ИИХФ ЧМ
     check('Sofascore (free)', '📡', null, () =>
       httpProbe({ hostname: 'api.sofascore.com',
-        path: '/api/v1/unique-tournament/3/seasons', method: 'GET',
+        path: '/api/v1/unique-tournament/3/season/81043/events/next/0', method: 'GET',
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
           'Accept': 'application/json', 'Referer': 'https://www.sofascore.com/', 'Origin': 'https://www.sofascore.com' } })
     ),
