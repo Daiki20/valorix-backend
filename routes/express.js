@@ -161,31 +161,153 @@ function toExpressDate(isoDate) {
   return `${d}/${m}/${y}`
 }
 
-// Fetch ALL hockey matches for a specific date from AllSports (IIHF, KHL, SHL, NHL etc.)
-// Uses the date-based endpoint — much more reliable than per-tournament queries
-async function fetchAllSportsHockeyByDate(targetDate) {
-  if (!process.env.RAPIDAPI_KEY) return []
-  const [year, month, day] = targetDate.split('-')
-  try {
-    const data = await allSportsGetPathExpress(`/api/sport/hockey/matches/${day}/${month}/${year}`)
-    const matches = []
-    for (const ev of (data.events || [])) {
-      const statusType = (ev.status?.type || '').toLowerCase()
-      if (statusType === 'finished' || statusType === 'inprogress' || statusType === 'canceled') continue
-      const home = ev.homeTeam?.name || ''
-      const away = ev.awayTeam?.name || ''
-      const league = ev.tournament?.name || ev.season?.name || 'Хоккей'
-      if (home && away) matches.push({ home, away, league })
+// ── Sofascore direct (free, no quota) ──────────────────────────────────────────
+function sofascoreGetExpress(path) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.sofascore.com',
+      path,
+      method: 'GET',
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json',
+        'Referer': 'https://www.sofascore.com/',
+        'Origin': 'https://www.sofascore.com',
+      },
     }
-    console.log(`[express/allsports] hockey ${targetDate}: ${matches.length} matches`)
-    return matches
-  } catch (err) {
-    console.warn(`[express/allsports] hockey ${targetDate}: ${err.message}`)
-    return []
-  }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => {
+        if (res.statusCode === 403 || res.statusCode === 429) {
+          reject(new Error(`Sofascore HTTP ${res.statusCode}`)); return
+        }
+        try { resolve(JSON.parse(data)) }
+        catch { reject(new Error('JSON parse error')) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    req.end()
+  })
 }
 
-// Fetch hockey games for a specific date — NHL free API + AllSportsApi date-based
+// ── Hockey tournaments with hardcoded fallback season IDs (same as matches.js) ─
+const HOCKEY_TOURNAMENTS_EXPRESS = [
+  { id: 3,    league: 'ИИХФ · Чемпионат мира', fallbackSeasonId: 81043 },
+  { id: 268,  league: 'КХЛ',                    fallbackSeasonId: 77998 },
+  { id: 1159, league: 'МХЛ',                    fallbackSeasonId: 79945 },
+  { id: 1141, league: 'ВХЛ',                    fallbackSeasonId: 78633 },
+]
+
+const seasonIdCacheEx = new Map()
+const SEASON_TTL_EX = 24 * 60 * 60 * 1000
+
+async function fetchSeasonIdForExpress(tournamentId, fallbackSeasonId) {
+  const cached = seasonIdCacheEx.get(tournamentId)
+  if (cached && Date.now() - cached.ts < SEASON_TTL_EX) return cached.seasonId
+
+  for (const fetchFn of [
+    () => allSportsGetPathExpress(`/api/tournament/${tournamentId}/seasons`),
+    () => sofascoreGetExpress(`/api/v1/unique-tournament/${tournamentId}/seasons`),
+  ]) {
+    try {
+      const data = await fetchFn()
+      const seasons = data?.seasons || data?.uniqueTournamentSeasons || []
+      if (!seasons.length) continue
+      const seasonId = seasons.sort((a, b) => (Number(b.id) || 0) - (Number(a.id) || 0))[0]?.id
+      if (seasonId) {
+        seasonIdCacheEx.set(tournamentId, { seasonId, ts: Date.now() })
+        return seasonId
+      }
+    } catch {}
+  }
+  // Hardcoded fallback — always works
+  if (fallbackSeasonId) {
+    console.warn(`[express/hockey] T=${tournamentId} using hardcoded season ${fallbackSeasonId}`)
+    return fallbackSeasonId
+  }
+  return null
+}
+
+// IIHF national teams translation
+const IIHF_TEAMS_EXPRESS = {
+  'Canada': 'Канада', 'Russia': 'Россия', 'Finland': 'Финляндия',
+  'Sweden': 'Швеция', 'USA': 'США', 'United States': 'США',
+  'Czech Republic': 'Чехия', 'Czechia': 'Чехия', 'Slovakia': 'Словакия',
+  'Switzerland': 'Швейцария', 'Germany': 'Германия', 'Latvia': 'Латвия',
+  'Denmark': 'Дания', 'Norway': 'Норвегия', 'France': 'Франция',
+  'Austria': 'Австрия', 'Hungary': 'Венгрия', 'Slovenia': 'Словения',
+  'Great Britain': 'Великобритания', 'Kazakhstan': 'Казахстан',
+  'Belarus': 'Беларусь', 'Poland': 'Польша', 'Italy': 'Италия',
+}
+function translateHockeyTeamExpress(name) {
+  return IIHF_TEAMS_EXPRESS[name] || name
+}
+
+// Fetch matches for one tournament: AllSportsApi2 → Sofascore direct (free)
+async function fetchTournamentMatchesForExpress(t, targetDate) {
+  const legacyPath = `/api/tournament/${t.id}/season/${t.seasonId}/matches/next/0`
+  const sofaPath   = `/api/v1/unique-tournament/${t.id}/season/${t.seasonId}/events/next/0`
+
+  let events = []
+  for (const fetchFn of [
+    () => allSportsGetPathExpress(legacyPath),
+    () => sofascoreGetExpress(sofaPath),
+  ]) {
+    try {
+      const data = await fetchFn()
+      const evts = data?.events || []
+      if (evts.length > 0) { events = evts; break }
+    } catch {}
+  }
+
+  const matches = []
+  for (const ev of events) {
+    const statusType = (ev.status?.type || '').toLowerCase()
+    if (statusType === 'finished' || statusType === 'inprogress') continue
+    // Filter to targetDate by startTimestamp (Unix seconds → UTC date)
+    if (ev.startTimestamp) {
+      const evDate = new Date(ev.startTimestamp * 1000).toISOString().slice(0, 10)
+      if (evDate !== targetDate) continue
+    }
+    const home = translateHockeyTeamExpress(ev.homeTeam?.name || '')
+    const away = translateHockeyTeamExpress(ev.awayTeam?.name || '')
+    if (home && away) matches.push({ home, away, league: t.league })
+  }
+  return matches
+}
+
+// Fetch all matches from AllSports/Sofascore for the target date
+// (IIHF World Championship, KHL, МХЛ, ВХЛ)
+async function fetchAllSportsHockeyForDate(targetDate) {
+  const tournamentsWithSeasons = await Promise.all(
+    HOCKEY_TOURNAMENTS_EXPRESS.map(async t => {
+      const seasonId = await fetchSeasonIdForExpress(t.id, t.fallbackSeasonId)
+      return { ...t, seasonId }
+    })
+  )
+  const valid = tournamentsWithSeasons.filter(t => t.seasonId)
+
+  const results = await Promise.allSettled(
+    valid.map(t => fetchTournamentMatchesForExpress(t, targetDate))
+  )
+
+  const matches = []
+  for (const r of results) {
+    if (r.status !== 'fulfilled') continue
+    for (const m of r.value) {
+      if (!matches.some(g => g.home === m.home && g.away === m.away)) {
+        matches.push(m)
+      }
+    }
+  }
+  console.log(`[express/allsports] ${targetDate}: ${matches.length} matches (IIHF/KHL/МХЛ/ВХЛ)`)
+  return matches
+}
+
+// Fetch hockey games for a specific date — NHL free API + AllSportsApi/Sofascore
 async function fetchHockeyMatchesForExpress(targetDate) {
   const matches = []
 
@@ -213,9 +335,9 @@ async function fetchHockeyMatchesForExpress(targetDate) {
     console.log(`[express/nhl] ${targetDate}: ${matches.length} NHL matches`)
   } catch {}
 
-  // AllSports date-based — IIHF World Championship, KHL, SHL, VHL, etc.
+  // AllSportsApi2 + Sofascore (free) — IIHF ЧМ, КХЛ, МХЛ, ВХЛ, filtered to targetDate
   try {
-    const extraMatches = await fetchAllSportsHockeyByDate(targetDate)
+    const extraMatches = await fetchAllSportsHockeyForDate(targetDate)
     for (const m of extraMatches) {
       if (!matches.some(g => g.home === m.home && g.away === m.away)) {
         matches.push(m)
@@ -223,6 +345,7 @@ async function fetchHockeyMatchesForExpress(targetDate) {
     }
   } catch {}
 
+  console.log(`[express/hockey] ${targetDate}: ${matches.length} total matches found`)
   return matches
 }
 
