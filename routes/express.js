@@ -161,80 +161,45 @@ function toExpressDate(isoDate) {
   return `${d}/${m}/${y}`
 }
 
-// Cache season IDs for express (24h)
-const seasonIdCacheExpress = new Map()
-const SEASON_TTL_EX = 24 * 60 * 60 * 1000
-
-async function fetchCurrentSeasonIdExpress(tournamentId) {
-  const cached = seasonIdCacheExpress.get(tournamentId)
-  if (cached && Date.now() - cached.ts < SEASON_TTL_EX) return cached.seasonId
-  try {
-    const data = await allSportsGetPathExpress(`/api/tournament/${tournamentId}/seasons`)
-    const seasons = data?.seasons || []
-    if (!seasons.length) return null
-    const sorted = seasons.sort((a, b) => {
-      const yearDiff = (Number(b.year) || 0) - (Number(a.year) || 0)
-      return yearDiff !== 0 ? yearDiff : (Number(b.id) || 0) - (Number(a.id) || 0)
-    })
-    const seasonId = sorted[0]?.id
-    if (seasonId) seasonIdCacheExpress.set(tournamentId, { seasonId, ts: Date.now() })
-    return seasonId || null
-  } catch { return null }
-}
-
-// Hockey tournaments for express (dynamic season IDs)
-const HOCKEY_EXPRESS_TOURNAMENTS_BASE = [
-  { id: 3,    league: 'ИИХФ · Чемпионат мира' },
-  { id: 268,  league: 'КХЛ' },
-  { id: 1159, league: 'МХЛ' },
-  { id: 1141, league: 'ВХЛ' },
-]
-
-// Fetch AllSportsApi hockey matches with dynamic season IDs
-async function fetchAllSportsHockey(targetDate) {
+// Fetch ALL hockey matches for a specific date from AllSports (IIHF, KHL, SHL, NHL etc.)
+// Uses the date-based endpoint — much more reliable than per-tournament queries
+async function fetchAllSportsHockeyByDate(targetDate) {
   if (!process.env.RAPIDAPI_KEY) return []
-  const tournamentsWithSeasons = await Promise.all(
-    HOCKEY_EXPRESS_TOURNAMENTS_BASE.map(async t => {
-      const seasonId = await fetchCurrentSeasonIdExpress(t.id)
-      return { ...t, seasonId }
-    })
-  )
-  const validTournaments = tournamentsWithSeasons.filter(t => t.seasonId)
-  const results = await Promise.allSettled(
-    validTournaments.map(t =>
-      allSportsGetPathExpress(`/api/tournament/${t.id}/season/${t.seasonId}/matches/next/0`)
-        .then(data => ({ league: t.league, events: data?.events || [] }))
-    )
-  )
-  const matches = []
-  for (const r of results) {
-    if (r.status !== 'fulfilled') continue
-    for (const ev of r.value.events) {
+  const [year, month, day] = targetDate.split('-')
+  try {
+    const data = await allSportsGetPathExpress(`/api/sport/hockey/matches/${day}/${month}/${year}`)
+    const matches = []
+    for (const ev of (data.events || [])) {
       const statusType = (ev.status?.type || '').toLowerCase()
-      if (statusType === 'finished') continue
-      // Filter to targetDate only (startTimestamp is Unix seconds)
-      if (ev.startTimestamp) {
-        const evDate = new Date(ev.startTimestamp * 1000).toISOString().slice(0, 10)
-        if (evDate !== targetDate) continue
-      }
+      if (statusType === 'finished' || statusType === 'inprogress' || statusType === 'canceled') continue
       const home = ev.homeTeam?.name || ''
       const away = ev.awayTeam?.name || ''
-      if (home && away) matches.push({ home, away, league: r.value.league })
+      const league = ev.tournament?.name || ev.season?.name || 'Хоккей'
+      if (home && away) matches.push({ home, away, league })
     }
+    console.log(`[express/allsports] hockey ${targetDate}: ${matches.length} matches`)
+    return matches
+  } catch (err) {
+    console.warn(`[express/allsports] hockey ${targetDate}: ${err.message}`)
+    return []
   }
-  return matches
 }
 
 // Fetch hockey games for a specific date — NHL free API + AllSportsApi date-based
 async function fetchHockeyMatchesForExpress(targetDate) {
   const matches = []
 
-  // 1. NHL free API (no key needed, always available)
-  // The NHL API returns a whole gameWeek — we filter to targetDate only
+  // NHL API uses Eastern Time (UTC-4/5). A game at 02:00 Moscow = 23:00 UTC the
+  // *previous* UTC day, so the NHL dates it as targetDate-1. Include both days.
+  const prevDate = new Date(targetDate)
+  prevDate.setDate(prevDate.getDate() - 1)
+  const prevDateStr = prevDate.toISOString().slice(0, 10)
+  const nhlAllowedDates = new Set([prevDateStr, targetDate])
+
   try {
     const data = await httpsGet(`https://api-web.nhle.com/v1/schedule/${targetDate}`)
     for (const day of (data.gameWeek || [])) {
-      if (day.date !== targetDate) continue  // Only games on the requested date
+      if (!nhlAllowedDates.has(day.date)) continue
       for (const game of (day.games || [])) {
         const state = game.gameState
         if (state === 'OFF' || state === 'FINAL') continue
@@ -245,12 +210,12 @@ async function fetchHockeyMatchesForExpress(targetDate) {
         if (home && away) matches.push({ home, away, league: 'НХЛ · Плей-офф' })
       }
     }
+    console.log(`[express/nhl] ${targetDate}: ${matches.length} NHL matches`)
   } catch {}
 
-  // 2. AllSportsApi — catches ИИХФ ЧМ, КХЛ, ВХЛ, МХЛ, SHL etc., filtered to targetDate
+  // AllSports date-based — IIHF World Championship, KHL, SHL, VHL, etc.
   try {
-    const extraMatches = await fetchAllSportsHockey(targetDate)
-    // Dedup with NHL
+    const extraMatches = await fetchAllSportsHockeyByDate(targetDate)
     for (const m of extraMatches) {
       if (!matches.some(g => g.home === m.home && g.away === m.away)) {
         matches.push(m)
@@ -436,12 +401,18 @@ ${hasRealOdds ? '- ЗАПРЕЩЕНО выдумывать коэффициен�
 async function generateSportExpress(sport, type, targetDate) {
   let matches = []
 
-  // Try targetDate, then next 3 days
-  for (let i = 0; i <= 3; i++) {
+  // Accumulate matches from targetDate + next 4 days until we have at least 2
+  // (NHL playoffs may have only 1 game per day — combine days)
+  for (let i = 0; i <= 4; i++) {
     const d = new Date(targetDate); d.setDate(d.getDate() + i)
     const dateStr = d.toISOString().slice(0, 10)
-    matches = await fetchHockeyMatchesForExpress(dateStr)
-    if (matches.length >= 2) { targetDate = dateStr; break }
+    const dayMatches = await fetchHockeyMatchesForExpress(dateStr)
+    for (const m of dayMatches) {
+      if (!matches.some(g => g.home === m.home && g.away === m.away)) {
+        matches.push(m)
+      }
+    }
+    if (matches.length >= 2) break
   }
   if (matches.length < 2) throw new Error('Нет хоккейных матчей в ближайшие дни')
 
