@@ -257,34 +257,51 @@ async function fetchTournamentMatchesForExpress(t, targetDate) {
   const legacyPath = `/api/tournament/${t.id}/season/${t.seasonId}/matches/next/0`
   const sofaPath   = `/api/v1/unique-tournament/${t.id}/season/${t.seasonId}/events/next/0`
 
+  // Fetch both in parallel: AllSports for match list, Sofascore for event IDs (h2h needs Sofascore IDs)
   let events = []
-  for (const fetchFn of [
-    () => allSportsGetPathExpress(legacyPath),
-    () => sofascoreGetExpress(sofaPath),
-  ]) {
-    try {
-      const data = await fetchFn()
-      const evts = data?.events || []
-      if (evts.length > 0) { events = evts; break }
-    } catch {}
+  const [allSportsResult, sofaResult] = await Promise.allSettled([
+    allSportsGetPathExpress(legacyPath),
+    sofascoreGetExpress(sofaPath),
+  ])
+
+  // Prefer AllSports for match list (paid, more reliable), but grab Sofascore IDs separately
+  const allSportsEvents = allSportsResult.status === 'fulfilled' ? (allSportsResult.value?.events || []) : []
+  const sofaEvents      = sofaResult.status      === 'fulfilled' ? (sofaResult.value?.events      || []) : []
+
+  // Use whichever source has data; prefer AllSports
+  events = allSportsEvents.length > 0 ? allSportsEvents : sofaEvents
+
+  // Build a lookup: team name → Sofascore event/team IDs (for h2h)
+  const sofaLookup = {}
+  for (const ev of sofaEvents) {
+    const hN = (ev.homeTeam?.name || '').toLowerCase()
+    const aN = (ev.awayTeam?.name || '').toLowerCase()
+    sofaLookup[`${hN}|${aN}`] = { eventId: ev.id, homeTeamId: ev.homeTeam?.id, awayTeamId: ev.awayTeam?.id }
+    sofaLookup[`${aN}|${hN}`] = { eventId: ev.id, homeTeamId: ev.awayTeam?.id, awayTeamId: ev.homeTeam?.id }
   }
 
   const matches = []
   for (const ev of events) {
     const statusType = (ev.status?.type || '').toLowerCase()
     if (statusType === 'finished' || statusType === 'inprogress') continue
-    // Filter to targetDate by startTimestamp (Unix seconds → UTC date)
     if (ev.startTimestamp) {
       const evDate = new Date(ev.startTimestamp * 1000).toISOString().slice(0, 10)
       if (evDate !== targetDate) continue
     }
     const home = translateHockeyTeamExpress(ev.homeTeam?.name || '')
     const away = translateHockeyTeamExpress(ev.awayTeam?.name || '')
-    if (home && away) matches.push({
+    if (!home || !away) continue
+
+    // Look up Sofascore IDs (works even if main events came from AllSports)
+    const hN = (ev.homeTeam?.name || '').toLowerCase()
+    const aN = (ev.awayTeam?.name || '').toLowerCase()
+    const sofaIds = sofaLookup[`${hN}|${aN}`] || {}
+
+    matches.push({
       home, away, league: t.league,
-      eventId: ev.id,                   // for h2h fetch
-      homeTeamId: ev.homeTeam?.id,
-      awayTeamId: ev.awayTeam?.id,
+      eventId:    sofaIds.eventId    || (sofaEvents === events ? ev.id            : null),
+      homeTeamId: sofaIds.homeTeamId || (sofaEvents === events ? ev.homeTeam?.id  : null),
+      awayTeamId: sofaIds.awayTeamId || (sofaEvents === events ? ev.awayTeam?.id  : null),
     })
   }
   return matches
