@@ -751,8 +751,31 @@ router.post('/purchase', authenticate, (req, res) => {
 router.post('/generate', authenticate, async (req, res) => {
   if (!req.user.is_admin) return res.status(403).json({ error: 'Только для администраторов' })
   const expressDate = getTomorrowDate()
-  const type = req.body?.type // 'standard' | 'high' | undefined (both)
+  const type  = req.body?.type  // 'standard' | 'high' | undefined (both)
+  const sport = req.body?.sport || 'football'
+
   try {
+    // ── Non-football sports (hockey etc.) → express_sports table ─────────────
+    if (sport !== 'football') {
+      if (type === 'standard' || type === 'high') {
+        const data = await generateSportExpress(sport, type, expressDate)
+        db.prepare('INSERT OR REPLACE INTO express_sports (date, sport, type, data) VALUES (?, ?, ?, ?)')
+          .run(expressDate, sport, type, JSON.stringify(data))
+        return res.json({ success: true, date: expressDate, sport, type, ...data })
+      }
+      // Both types
+      const [standard, high] = await Promise.all([
+        generateSportExpress(sport, 'standard', expressDate),
+        generateSportExpress(sport, 'high',     expressDate),
+      ])
+      db.prepare('INSERT OR REPLACE INTO express_sports (date, sport, type, data) VALUES (?, ?, ?, ?)')
+        .run(expressDate, sport, 'standard', JSON.stringify(standard))
+      db.prepare('INSERT OR REPLACE INTO express_sports (date, sport, type, data) VALUES (?, ?, ?, ?)')
+        .run(expressDate, sport, 'high', JSON.stringify(high))
+      return res.json({ success: true, date: expressDate, sport, standard, high })
+    }
+
+    // ── Football → legacy daily_express / daily_express_high tables ──────────
     if (type === 'standard') {
       const data = await generateExpress(expressDate, 'standard')
       db.prepare('INSERT OR REPLACE INTO daily_express (date, data) VALUES (?, ?)').run(expressDate, JSON.stringify(data))
@@ -763,7 +786,7 @@ router.post('/generate', authenticate, async (req, res) => {
       db.prepare('INSERT OR REPLACE INTO daily_express_high (date, data) VALUES (?, ?)').run(expressDate, JSON.stringify(data))
       return res.json({ success: true, date: expressDate, ...data })
     }
-    // Generate both
+    // Both
     const [standard, high] = await Promise.all([
       generateExpress(expressDate, 'standard'),
       generateExpress(expressDate, 'high'),
