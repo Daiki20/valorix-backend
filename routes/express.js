@@ -53,9 +53,15 @@ function getDateOffset(days) {
   return d.toISOString().slice(0, 10)
 }
 
-function httpsGet(url) {
+function httpsGet(url, maxRedirects = 4) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, (res) => {
+      // Follow HTTP redirects (Node.js doesn't do this automatically)
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        if (maxRedirects <= 0) { reject(new Error('Too many redirects')); return }
+        resolve(httpsGet(res.headers.location, maxRedirects - 1))
+        return
+      }
       let data = ''
       res.on('data', chunk => data += chunk)
       res.on('end', () => {
@@ -274,7 +280,12 @@ async function fetchTournamentMatchesForExpress(t, targetDate) {
     }
     const home = translateHockeyTeamExpress(ev.homeTeam?.name || '')
     const away = translateHockeyTeamExpress(ev.awayTeam?.name || '')
-    if (home && away) matches.push({ home, away, league: t.league })
+    if (home && away) matches.push({
+      home, away, league: t.league,
+      eventId: ev.id,                   // for h2h fetch
+      homeTeamId: ev.homeTeam?.id,
+      awayTeamId: ev.awayTeam?.id,
+    })
   }
   return matches
 }
@@ -463,7 +474,7 @@ function parseExpressJson(content, date) {
   return data
 }
 
-function buildSportExpressPrompt(sport, type, matches, date, statsContext = null) {
+function buildSportExpressPrompt(sport, type, matches, date) {
   const isHigh = type === 'high'
   const isHockey = sport === 'hockey'
   const sportLabel = { hockey: 'хоккей' }[sport] || sport
@@ -474,23 +485,30 @@ function buildSportExpressPrompt(sport, type, matches, date, statsContext = null
     : `- Итоговый коэф 2.00–4.00, выбери 2-3 события
 - Каждый коэф 1.30–2.20`
 
-  // Build match blocks — show П1/П2 and team records where available
+  // Build match blocks — h2h, odds, season records
   const matchBlocks = matches.map((m, i) => {
     let block = `${i + 1}. ${m.home} — ${m.away} (${m.league})`
     if (isHockey && m.odds) {
-      block += `\n  П1: ${m.odds.home} | П2: ${m.odds.away}`
+      block += `\n  Коэф П1: ${m.odds.home} | П2: ${m.odds.away}`
     }
     if (m.homeRecord || m.awayRecord) {
-      block += `\n  Статистика сезона — ${m.home}: ${m.homeRecord || 'н/д'} | ${m.away}: ${m.awayRecord || 'н/д'}`
+      block += `\n  Сезон: ${m.home}: ${m.homeRecord || 'н/д'} | ${m.away}: ${m.awayRecord || 'н/д'}`
+    }
+    if (m.homeForm || m.awayForm) {
+      block += `\n  Форма: ${m.home} — ${m.homeForm || 'н/д'} | ${m.away} — ${m.awayForm || 'н/д'}`
+    }
+    if (m.h2h) {
+      block += `\n  Последние личные встречи:\n${m.h2h}`
     }
     return block
   }).join('\n\n')
 
+  const hasAnyStats = matches.some(m => m.h2h || m.homeForm || m.awayForm || m.homeRecord)
+
   const oddsNote = isHockey
     ? `КОЭФФИЦИЕНТЫ:
 - Где указаны П1/П2 — используй эти точные числа если выбираешь победу команды
-- Для тоталов (ТБ/ТМ), фор и других рынков — оцени реалистично как у топ-букмекеров
-- Не выдумывай П1/П2 если они указаны в списке выше`
+- Для тоталов (ТБ/ТМ), фор и других рынков — оцени реалистично как у топ-букмекеров`
     : `Коэффициенты оцени реалистично на основе силы команд, как у топ-букмекеров.`
 
   const predNote = isHockey
@@ -499,19 +517,19 @@ function buildSportExpressPrompt(sport, type, matches, date, statsContext = null
   * Фора: "Фора (-1.5)" / "Фора (+1.5)"
   * Победа: "П1" / "П2"
   * Двойной шанс: "1X" / "X2"
-  * Обе забьют: "ОО" (оба отличатся — оба забьют 2+ шайбы)
   Выбирай ТУ ставку где у тебя наибольшая уверенность, независимо от типа`
     : `"prediction" — конкретная ставка (Победа хозяев / П1 / ТБ 2.5 / Фора (-1.5) / 1X)`
 
-  const statsBlock = statsContext
-    ? `\nРЕАЛЬНАЯ СТАТИСТИКА (используй для обоснования ставок):\n${statsContext}\n`
-    : ''
+  const statsInstruction = hasAnyStats
+    ? `- В "reasoning" ОБЯЗАТЕЛЬНО используй реальную статистику из блока выше (личные встречи, форму команд, счета)
+- Ссылайся на конкретные цифры: "в последних 4 встречах ...", "команда выиграла X из 5 матчей" и т.д.`
+    : `- В "reasoning" объясни ПОЧЕМУ выбрал именно эту ставку (форма команд, статистика, сила составов)`
 
-  return `Ты эксперт по ставкам на ${sportLabel}. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс на основе реального расписания.
+  return `Ты эксперт по ставкам на ${sportLabel}. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс на основе реального расписания и РЕАЛЬНОЙ статистики.
 
-МАТЧИ НА ${date}:
+МАТЧИ НА ${date} (со статистикой):
 ${matchBlocks}
-${statsBlock}
+
 ${oddsNote}
 
 Требования:
@@ -519,11 +537,10 @@ ${oddsReq}
 - Выбирай ТОЛЬКО из матчей выше
 - Все текстовые поля СТРОГО на русском языке
 - ${predNote}
-- В "reasoning" объясни ПОЧЕМУ выбрал именно эту ставку (форма команд, статистика, сила составов)
-- Используй РЕАЛЬНУЮ статистику из блока выше (если есть) для обоснования, не выдумывай цифры
+${statsInstruction}
 
 Ответь ТОЛЬКО валидным JSON без markdown:
-{"date":"${date}","picks":[{"home":"...","away":"...","league":"...","prediction":"ТБ 5.5","odds":1.82,"reasoning":"Обоснование на русском 2-3 предложения"}],"total_odds":2.72,"summary":"Описание экспресса на русском"}`
+{"date":"${date}","picks":[{"home":"...","away":"...","league":"...","prediction":"ТБ 5.5","odds":1.82,"reasoning":"Конкретное обоснование с реальными цифрами из статистики выше"}],"total_odds":2.72,"summary":"Описание экспресса на русском"}`
 }
 
 // ── Real stats fetchers for express context ──────────────────────────────────
@@ -581,6 +598,42 @@ async function fetchNHLStandingsMap() {
   }
 }
 
+// Fetch last N head-to-head results from Sofascore (same API as match analysis)
+async function fetchH2HForExpress(eventId) {
+  if (!eventId) return null
+  try {
+    const data = await sofascoreGetExpress(`/api/v1/event/${eventId}/h2h`)
+    const finished = (data?.events || []).filter(e => e.status?.type === 'finished').slice(0, 5)
+    if (!finished.length) return null
+    const lines = finished.map(ev => {
+      const hs = ev.homeScore?.current ?? '?'
+      const as_ = ev.awayScore?.current ?? '?'
+      const h = translateHockeyTeamExpress(ev.homeTeam?.name || '?')
+      const a = translateHockeyTeamExpress(ev.awayTeam?.name || '?')
+      return `  ${h} ${hs}:${as_} ${a}`
+    })
+    return lines.join('\n')
+  } catch { return null }
+}
+
+// Fetch last 5 matches for a team (for form context)
+async function fetchTeamFormForExpress(teamId) {
+  if (!teamId) return null
+  try {
+    const data = await sofascoreGetExpress(`/api/v1/team/${teamId}/events/previous/0`)
+    const events = (data?.events || []).filter(e => e.status?.type === 'finished').slice(0, 5)
+    if (!events.length) return null
+    const results = events.map(ev => {
+      const isHome = ev.homeTeam?.id === teamId
+      const tf = isHome ? ev.homeScore?.current : ev.awayScore?.current
+      const ta = isHome ? ev.awayScore?.current : ev.homeScore?.current
+      return tf > ta ? 'П' : tf < ta ? 'П' : 'Н'
+    })
+    const w = results.filter(r => r === 'П').length
+    return `${w}/5 побед в последних 5 играх`
+  } catch { return null }
+}
+
 // Main sport-specific express generator
 async function generateSportExpress(sport, type, targetDate) {
   let matches = []
@@ -606,27 +659,30 @@ async function generateSportExpress(sport, type, targetDate) {
   const withOdds = matches.filter(m => m.odds).length
   console.log(`[express/hockey] ${matches.length} matches, ${withOdds} with real odds`)
 
-  // ── Fetch real stats context in parallel ─────────────────────────────────
-  const hasIIHF = matches.some(m => m.league?.includes('ИИХФ') || m.league?.includes('Чемпионат мира'))
-  const hasNHL  = matches.some(m => m.league?.includes('НХЛ'))
+  // ── Fetch h2h + team form for each match in parallel (same as match analysis) ─
+  const top6 = matches.slice(0, 6)
+  const matchesWithStats = await Promise.all(top6.map(async m => {
+    const [h2h, homeForm, awayForm] = await Promise.all([
+      fetchH2HForExpress(m.eventId),
+      fetchTeamFormForExpress(m.homeTeamId),
+      fetchTeamFormForExpress(m.awayTeamId),
+    ])
+    return { ...m, h2h, homeForm, awayForm }
+  }))
+  const h2hCount = matchesWithStats.filter(m => m.h2h).length
+  console.log(`[express/h2h] fetched h2h for ${h2hCount}/${top6.length} matches`)
 
-  const iihfSeasonId = seasonIdCacheEx.get(3)?.seasonId || 81043
-
-  const [iihfStandings, nhlStandingsMap] = await Promise.all([
-    hasIIHF ? fetchIIHFGroupStandings(iihfSeasonId) : Promise.resolve(null),
-    hasNHL  ? fetchNHLStandingsMap()                 : Promise.resolve(null),
-  ])
-
-  // Attach NHL record to each NHL match
+  // ── Also try NHL standings (may work if redirect is now fixed) ────────────
+  const hasNHL = matches.some(m => m.league?.includes('НХЛ'))
+  const nhlStandingsMap = hasNHL ? await fetchNHLStandingsMap().catch(() => null) : null
   if (nhlStandingsMap) {
-    matches = matches.map(m => {
-      if (!m.league?.includes('НХЛ')) return m
-      // Find NHL abbrev by Russian name lookup
-      const findAbbrev = (ruName) =>
-        Object.entries(NHL_TEAMS_RU).find(([, ru]) => ru === ruName)?.[0]
+    const findAbbrev = (ruName) =>
+      Object.entries(NHL_TEAMS_RU).find(([, ru]) => ru === ruName)?.[0]
+    matchesWithStats.forEach((m, i) => {
+      if (!m.league?.includes('НХЛ')) return
       const homeAbbr = findAbbrev(m.home)
       const awayAbbr = findAbbrev(m.away)
-      return {
+      matchesWithStats[i] = {
         ...m,
         homeRecord: homeAbbr ? nhlStandingsMap[homeAbbr] : null,
         awayRecord: awayAbbr ? nhlStandingsMap[awayAbbr] : null,
@@ -634,9 +690,7 @@ async function generateSportExpress(sport, type, targetDate) {
     })
   }
 
-  const statsContext = [iihfStandings].filter(Boolean).join('\n\n') || null
-
-  const prompt = buildSportExpressPrompt(sport, type, matches.slice(0, 6), targetDate, statsContext)
+  const prompt = buildSportExpressPrompt(sport, type, matchesWithStats, targetDate)
   const content = await openAIRequest([
     { role: 'system', content: `Ты эксперт по ставкам на спорт. Отвечай только валидным JSON на русском языке.` },
     { role: 'user', content: prompt },
