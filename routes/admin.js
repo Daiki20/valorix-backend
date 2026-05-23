@@ -1,9 +1,31 @@
 const express = require('express')
+const https = require('https')
 const db = require('../db')
 const { authenticate } = require('../middleware/auth')
 const { requireAdmin } = require('../middleware/admin')
 
 const router = express.Router()
+
+// ── API Status check helpers ──────────────────────────────────────────────────
+function httpProbe(options, timeout = 6000) {
+  return new Promise((resolve) => {
+    const start = Date.now()
+    const req = https.request(options, (res) => {
+      res.resume() // drain response
+      const ms = Date.now() - start
+      if (res.statusCode === 401 || res.statusCode === 403) {
+        resolve({ ok: false, detail: `HTTP ${res.statusCode} — неверный ключ`, ms })
+      } else if (res.statusCode >= 200 && res.statusCode < 500) {
+        resolve({ ok: true, detail: `HTTP ${res.statusCode}`, ms })
+      } else {
+        resolve({ ok: false, detail: `HTTP ${res.statusCode}`, ms })
+      }
+    })
+    req.on('error', (e) => resolve({ ok: false, detail: e.message, ms: Date.now() - start }))
+    req.setTimeout(timeout, () => { req.destroy(); resolve({ ok: false, detail: 'Таймаут', ms: timeout }) })
+    req.end()
+  })
+}
 
 router.use(authenticate, requireAdmin)
 
@@ -94,6 +116,71 @@ router.post('/set-blocked', (req, res) => {
 
   db.prepare('UPDATE users SET is_blocked = ? WHERE id = ?').run(value ? 1 : 0, user.id)
   res.json({ success: true })
+})
+
+// GET /admin/api-status — проверка всех подключённых API (ключи не возвращаются)
+router.get('/api-status', async (req, res) => {
+  const results = []
+
+  const check = async (name, icon, keyEnv, probeFn) => {
+    const hasKey = keyEnv ? !!process.env[keyEnv] : true // free APIs don't need key check
+    if (keyEnv && !hasKey) {
+      results.push({ name, icon, status: 'no_key', detail: 'Ключ не настроен (env не задан)', ms: 0 })
+      return
+    }
+    try {
+      const { ok, detail, ms } = await probeFn()
+      results.push({ name, icon, status: ok ? 'ok' : 'error', detail, ms })
+    } catch (e) {
+      results.push({ name, icon, status: 'error', detail: e.message, ms: 0 })
+    }
+  }
+
+  await Promise.all([
+    // OpenAI — GET /v1/models (бесплатный эндпоинт, просто листинг моделей)
+    check('OpenAI (GPT-4o)', '🤖', 'OPENAI_API_KEY', () =>
+      httpProbe({ hostname: 'api.openai.com', path: '/v1/models', method: 'GET',
+        headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` } })
+    ),
+
+    // AllSports RapidAPI — лёгкий запрос списка стран
+    check('AllSports (RapidAPI)', '🏒', 'RAPIDAPI_KEY', () =>
+      httpProbe({ hostname: 'allsportsapi2.p.rapidapi.com', path: '/api/country/list', method: 'GET',
+        headers: { 'X-RapidAPI-Key': process.env.RAPIDAPI_KEY, 'X-RapidAPI-Host': 'allsportsapi2.p.rapidapi.com' } })
+    ),
+
+    // The Odds API — список видов спорта (не тратит квоту)
+    check('The Odds API', '📊', 'ODDS_API_KEY', () =>
+      httpProbe({ hostname: 'api.the-odds-api.com',
+        path: `/v4/sports?apiKey=${process.env.ODDS_API_KEY}`, method: 'GET' })
+    ),
+
+    // SStats — бесплатный лёгкий запрос
+    check('SStats (Football)', '⚽', 'SSTATS_API_KEY', () =>
+      httpProbe({ hostname: 'api.sstats.net',
+        path: `/Games/list?upcoming=true&leagueid=39&limit=1&apikey=${process.env.SSTATS_API_KEY}`,
+        method: 'GET' })
+    ),
+
+    // NHL Free API — бесплатно, без ключа
+    check('NHL API (free)', '🏒', null, () =>
+      httpProbe({ hostname: 'api-web.nhle.com', path: '/v1/standings/now', method: 'GET' })
+    ),
+
+    // Sofascore — бесплатно, без ключа
+    check('Sofascore (free)', '📡', null, () =>
+      httpProbe({ hostname: 'api.sofascore.com', path: '/api/v1/sport/ice-hockey/events/live', method: 'GET',
+        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.sofascore.com/' } })
+    ),
+
+    // YooKassa — просто проверяем что ключи настроены (не делаем запрос к платёжке)
+    check('ЮКасса (платежи)', '💳', 'YOOKASSA_SHOP_ID', async () => {
+      const hasSecret = !!process.env.YOOKASSA_SECRET_KEY
+      return { ok: hasSecret, detail: hasSecret ? 'Shop ID + Secret Key настроены' : 'YOOKASSA_SECRET_KEY не задан', ms: 0 }
+    }),
+  ])
+
+  res.json(results)
 })
 
 // GET /admin/transactions — все транзакции
