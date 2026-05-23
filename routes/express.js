@@ -212,6 +212,11 @@ async function fetchAllSportsHockey(targetDate) {
     for (const ev of r.value.events) {
       const statusType = (ev.status?.type || '').toLowerCase()
       if (statusType === 'finished') continue
+      // Filter to targetDate only (startTimestamp is Unix seconds)
+      if (ev.startTimestamp) {
+        const evDate = new Date(ev.startTimestamp * 1000).toISOString().slice(0, 10)
+        if (evDate !== targetDate) continue
+      }
       const home = ev.homeTeam?.name || ''
       const away = ev.awayTeam?.name || ''
       if (home && away) matches.push({ home, away, league: r.value.league })
@@ -225,9 +230,11 @@ async function fetchHockeyMatchesForExpress(targetDate) {
   const matches = []
 
   // 1. NHL free API (no key needed, always available)
+  // The NHL API returns a whole gameWeek — we filter to targetDate only
   try {
     const data = await httpsGet(`https://api-web.nhle.com/v1/schedule/${targetDate}`)
     for (const day of (data.gameWeek || [])) {
+      if (day.date !== targetDate) continue  // Only games on the requested date
       for (const game of (day.games || [])) {
         const state = game.gameState
         if (state === 'OFF' || state === 'FINAL') continue
@@ -240,7 +247,7 @@ async function fetchHockeyMatchesForExpress(targetDate) {
     }
   } catch {}
 
-  // 2. AllSportsApi date-based — catches ИИХФ ЧМ, КХЛ, ВХЛ, МХЛ, SHL etc.
+  // 2. AllSportsApi — catches ИИХФ ЧМ, КХЛ, ВХЛ, МХЛ, SHL etc., filtered to targetDate
   try {
     const extraMatches = await fetchAllSportsHockey(targetDate)
     // Dedup with NHL
