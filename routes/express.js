@@ -778,9 +778,10 @@ router.get('/today', async (req, res) => {
       const purchased = userId
         ? !!db.prepare('SELECT 1 FROM express_sports_purchases WHERE user_id = ? AND express_date = ? AND sport = ? AND type = ?').get(userId, expressDate, sport, type)
         : false
-      if (purchased) return { date: expressDate, purchased: true, ...expressData }
+      if (purchased) return { date: expressDate, purchased: true, generated_at: row.created_at, ...expressData }
       return {
         date: expressDate, purchased: false,
+        generated_at: row.created_at,
         summary: expressData.summary, total_odds: expressData.total_odds,
         picks_count: expressData.picks.length,
         picks: expressData.picks.map(p => ({ home: p.home, away: p.away, league: p.league, prediction: null, odds: null })),
