@@ -13,12 +13,19 @@ function httpProbe(options, timeout = 6000) {
     const req = https.request(options, (res) => {
       res.resume() // drain response
       const ms = Date.now() - start
-      if (res.statusCode === 401 || res.statusCode === 403) {
-        resolve({ ok: false, detail: `HTTP ${res.statusCode} — неверный ключ`, ms })
-      } else if (res.statusCode >= 200 && res.statusCode < 500) {
-        resolve({ ok: true, detail: `HTTP ${res.statusCode}`, ms })
+      const code = res.statusCode
+      if (code === 429) {
+        resolve({ ok: false, detail: `⚠️ Лимит исчерпан (HTTP 429)`, ms })
+      } else if (code === 402) {
+        resolve({ ok: false, detail: `💳 Закончилась подписка (HTTP 402)`, ms })
+      } else if (code === 401) {
+        resolve({ ok: false, detail: `HTTP 401 — неверный ключ`, ms })
+      } else if (code === 403) {
+        resolve({ ok: false, detail: `HTTP 403 — доступ запрещён`, ms })
+      } else if (code >= 200 && code < 400) {
+        resolve({ ok: true, detail: `HTTP ${code}`, ms })
       } else {
-        resolve({ ok: false, detail: `HTTP ${res.statusCode}`, ms })
+        resolve({ ok: false, detail: `HTTP ${code}`, ms })
       }
     })
     req.on('error', (e) => resolve({ ok: false, detail: e.message, ms: Date.now() - start }))
@@ -143,9 +150,10 @@ router.get('/api-status', async (req, res) => {
         headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` } })
     ),
 
-    // AllSports RapidAPI — лёгкий запрос списка стран
+    // AllSports RapidAPI — тот же эндпоинт что используем в продакшне
     check('AllSports (RapidAPI)', '🏒', 'RAPIDAPI_KEY', () =>
-      httpProbe({ hostname: 'allsportsapi2.p.rapidapi.com', path: '/api/country/list', method: 'GET',
+      httpProbe({ hostname: 'allsportsapi2.p.rapidapi.com',
+        path: '/api/tournament/3/seasons', method: 'GET',
         headers: { 'X-RapidAPI-Key': process.env.RAPIDAPI_KEY, 'X-RapidAPI-Host': 'allsportsapi2.p.rapidapi.com' } })
     ),
 
@@ -167,10 +175,12 @@ router.get('/api-status', async (req, res) => {
       httpProbe({ hostname: 'api-web.nhle.com', path: '/v1/standings/now', method: 'GET' })
     ),
 
-    // Sofascore — бесплатно, без ключа
+    // Sofascore — тот же эндпоинт что используем (ИИХФ сезоны)
     check('Sofascore (free)', '📡', null, () =>
-      httpProbe({ hostname: 'api.sofascore.com', path: '/api/v1/sport/ice-hockey/events/live', method: 'GET',
-        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.sofascore.com/' } })
+      httpProbe({ hostname: 'api.sofascore.com',
+        path: '/api/v1/unique-tournament/3/seasons', method: 'GET',
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json', 'Referer': 'https://www.sofascore.com/', 'Origin': 'https://www.sofascore.com' } })
     ),
 
     // YuKassa — просто проверяем что ключи настроены (не делаем запрос к платёжке)
