@@ -644,10 +644,14 @@ async function fetchTeamFormForExpress(teamId) {
       const isHome = ev.homeTeam?.id === teamId
       const tf = isHome ? ev.homeScore?.current : ev.awayScore?.current
       const ta = isHome ? ev.awayScore?.current : ev.homeScore?.current
-      return tf > ta ? 'П' : tf < ta ? 'П' : 'Н'
+      if (tf == null || ta == null) return 'Н'
+      return tf > ta ? 'В' : tf < ta ? 'П' : 'Н'  // В=win, П=loss, Н=draw
     })
-    const w = results.filter(r => r === 'П').length
-    return `${w}/5 побед в последних 5 играх`
+    const wins   = results.filter(r => r === 'В').length
+    const losses = results.filter(r => r === 'П').length
+    const draws  = results.filter(r => r === 'Н').length
+    const n = results.length
+    return `${wins}П/${losses}П/${draws}Н из ${n} матчей`
   } catch { return null }
 }
 
