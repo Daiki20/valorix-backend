@@ -1,4 +1,16 @@
 require('dotenv').config()
+
+// ── Sentry (должен быть инициализирован раньше всего) ────────────────────────
+const Sentry = require('@sentry/node')
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV || 'production',
+    tracesSampleRate: 0.2,
+  })
+  console.log('✅ Sentry initialized')
+}
+
 const express = require('express')
 const cors = require('cors')
 const helmet = require('helmet')
