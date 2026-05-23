@@ -86,56 +86,49 @@ app.use('/matches', matchesRoutes)
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }))
 
-// ── Cron: auto-generate express at 00:05 MSK (21:05 UTC) ─────────────────
-// Generates all 4 variants: football standard+high, hockey standard+high
+// ── Cron: ⚽ Football Lite at 00:05 MSK (21:05 UTC) ──────────────────────
 cron.schedule('5 21 * * *', async () => {
-  console.log('[cron] Generating daily express for all sports...')
   const { generateExpressForDate, getTomorrowDate } = require('./routes/express')
   const db = require('./db')
   const targetDate = getTomorrowDate()
-
-  // Football standard
+  console.log(`[cron] ⚽ Football Lite generating for ${targetDate}...`)
   try {
     const data = await generateExpressForDate(targetDate, 'standard')
     db.prepare('INSERT OR REPLACE INTO daily_express (date, data) VALUES (?, ?)').run(targetDate, JSON.stringify(data))
-    console.log(`[cron] ⚽ Football standard done for ${targetDate}`)
+    console.log(`[cron] ⚽ Football Lite done`)
   } catch (err) {
-    console.error('[cron] ⚽ Football standard failed:', err.message)
+    console.error('[cron] ⚽ Football Lite failed:', err.message)
   }
+}, { timezone: 'UTC' })
 
-  // Football high (pause to avoid OpenAI TPM limit)
-  await new Promise(r => setTimeout(r, 5000))
+// ── Cron: ⚽ Football Hard at 00:10 MSK (21:10 UTC) ──────────────────────
+cron.schedule('10 21 * * *', async () => {
+  const { generateExpressForDate, getTomorrowDate } = require('./routes/express')
+  const db = require('./db')
+  const targetDate = getTomorrowDate()
+  console.log(`[cron] ⚽ Football Hard generating for ${targetDate}...`)
   try {
     const data = await generateExpressForDate(targetDate, 'high')
     db.prepare('INSERT OR REPLACE INTO daily_express_high (date, data) VALUES (?, ?)').run(targetDate, JSON.stringify(data))
-    console.log(`[cron] ⚽ Football high done for ${targetDate}`)
+    console.log(`[cron] ⚽ Football Hard done`)
   } catch (err) {
-    console.error('[cron] ⚽ Football high failed:', err.message)
+    console.error('[cron] ⚽ Football Hard failed:', err.message)
   }
+}, { timezone: 'UTC' })
 
-  // Hockey standard
-  await new Promise(r => setTimeout(r, 5000))
+// ── Cron: 🏒 Hockey Lite at 00:15 MSK (21:15 UTC) ────────────────────────
+cron.schedule('15 21 * * *', async () => {
+  const { generateSportExpressForCron, getTomorrowDate } = require('./routes/express')
+  const db = require('./db')
+  const targetDate = getTomorrowDate()
+  console.log(`[cron] 🏒 Hockey Lite generating for ${targetDate}...`)
   try {
-    const { generateSportExpressForCron } = require('./routes/express')
     const data = await generateSportExpressForCron('hockey', 'standard', targetDate)
     db.prepare('INSERT OR REPLACE INTO express_sports (date, sport, type, data) VALUES (?, ?, ?, ?)').run(targetDate, 'hockey', 'standard', JSON.stringify(data))
-    console.log(`[cron] 🏒 Hockey standard done for ${targetDate}`)
+    console.log(`[cron] 🏒 Hockey Lite done`)
   } catch (err) {
-    console.error('[cron] 🏒 Hockey standard failed:', err.message)
+    console.error('[cron] 🏒 Hockey Lite failed:', err.message)
   }
-
-  // Hockey high
-  await new Promise(r => setTimeout(r, 5000))
-  try {
-    const { generateSportExpressForCron } = require('./routes/express')
-    const data = await generateSportExpressForCron('hockey', 'high', targetDate)
-    db.prepare('INSERT OR REPLACE INTO express_sports (date, sport, type, data) VALUES (?, ?, ?, ?)').run(targetDate, 'hockey', 'high', JSON.stringify(data))
-    console.log(`[cron] 🏒 Hockey high done for ${targetDate}`)
-  } catch (err) {
-    console.error('[cron] 🏒 Hockey high failed:', err.message)
-  }
-
-  console.log(`[cron] All express generation complete for ${targetDate}`)
 }, { timezone: 'UTC' })
 
 // ── 404 ───────────────────────────────────────────────────
