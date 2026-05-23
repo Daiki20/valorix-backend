@@ -173,10 +173,10 @@ router.get('/api-status', async (req, res) => {
         headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.sofascore.com/' } })
     ),
 
-    // YooKassa — просто проверяем что ключи настроены (не делаем запрос к платёжке)
-    check('ЮКасса (платежи)', '💳', 'YOOKASSA_SHOP_ID', async () => {
-      const hasSecret = !!process.env.YOOKASSA_SECRET_KEY
-      return { ok: hasSecret, detail: hasSecret ? 'Shop ID + Secret Key настроены' : 'YOOKASSA_SECRET_KEY не задан', ms: 0 }
+    // YuKassa — просто проверяем что ключи настроены (не делаем запрос к платёжке)
+    check('ЮКасса (платежи)', '💳', 'YUKASSA_SHOP_ID', async () => {
+      const hasSecret = !!process.env.YUKASSA_SECRET_KEY
+      return { ok: hasSecret, detail: hasSecret ? 'Shop ID + Secret Key настроены' : 'YUKASSA_SECRET_KEY не задан', ms: 0 }
     }),
   ])
 
