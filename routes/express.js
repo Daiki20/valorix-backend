@@ -885,38 +885,63 @@ router.get('/today', async (req, res) => {
       } catch {}
     }
 
-    const expressDate = getTomorrowDate()
-
-    // ── Football: existing legacy tables ─────────────────────────────────────
+    // ── Football: smart date search (завтра → сегодня → послезавтра → +3) ─────
     if (sport === 'football') {
-      const getOrGenerate = async (table, purchaseTable) => {
-        const type = table === 'daily_express' ? 'standard' : 'high'
-        let row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
-        if (!row) {
-          await withMutex(`${table}_${expressDate}`, async () => {
-            const existing = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
-            if (existing) { row = existing; return }
-            try {
-              const data = await generateExpress(expressDate, type)
-              db.prepare(`INSERT OR IGNORE INTO ${table} (date, data) VALUES (?, ?)`).run(expressDate, JSON.stringify(data))
-              row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
-            } catch { return null }
-          })
-          if (!row) row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(expressDate)
-        }
+      // Кандидаты в порядке приоритета: завтра первый (основной режим),
+      // потом сегодня и послезавтра как fallback
+      const CANDIDATE_DATES = [
+        getTomorrowDate(),
+        getTodayDate(),
+        getDateOffset(2),
+        getDateOffset(3),
+      ]
+
+      const formatRow = (row, date, purchaseTable) => {
         let expressData
         try { expressData = JSON.parse(row.data) } catch { return null }
         const purchased = userId
-          ? !!db.prepare(`SELECT 1 FROM ${purchaseTable} WHERE user_id = ? AND express_date = ?`).get(userId, expressDate)
+          ? !!db.prepare(`SELECT 1 FROM ${purchaseTable} WHERE user_id = ? AND express_date = ?`).get(userId, date)
           : false
-        if (purchased) return { date: expressDate, purchased: true, ...expressData }
+        if (purchased) return { date, purchased: true, ...expressData }
         return {
-          date: expressDate, purchased: false,
+          date, purchased: false,
           summary: expressData.summary, total_odds: expressData.total_odds,
           picks_count: expressData.picks.length,
           picks: expressData.picks.map(p => ({ home: p.home, away: p.away, league: p.league, prediction: null, odds: null })),
         }
       }
+
+      const getOrGenerate = async (table, purchaseTable) => {
+        const type = table === 'daily_express' ? 'standard' : 'high'
+
+        // 1. Ищем уже готовый экспресс в любой из кандидатных дат
+        for (const date of CANDIDATE_DATES) {
+          const row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(date)
+          if (row) return formatRow(row, date, purchaseTable)
+        }
+
+        // 2. Не нашли — пробуем генерировать, начиная с завтра
+        for (const date of CANDIDATE_DATES) {
+          let row = null
+          await withMutex(`${table}_${date}`, async () => {
+            const existing = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(date)
+            if (existing) { row = existing; return }
+            try {
+              const data = await generateExpress(date, type)
+              db.prepare(`INSERT OR IGNORE INTO ${table} (date, data) VALUES (?, ?)`).run(date, JSON.stringify(data))
+              row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(date)
+              console.log(`[express/football] Generated ${type} for ${date}`)
+            } catch (e) {
+              console.warn(`[express/football] No matches for ${date}: ${e.message}`)
+            }
+          })
+          if (!row) row = db.prepare(`SELECT * FROM ${table} WHERE date = ?`).get(date)
+          if (row) return formatRow(row, date, purchaseTable)
+        }
+
+        return null
+      }
+
       const standard = await getOrGenerate('daily_express', 'express_purchases')
       await new Promise(r => setTimeout(r, 3000))
       const high = await getOrGenerate('daily_express_high', 'express_purchases_high')
@@ -966,7 +991,12 @@ router.get('/today', async (req, res) => {
 
 // ── POST /express/purchase ────────────────────────────────────────────────────
 router.post('/purchase', authenticate, (req, res) => {
-  const expressDate = getTomorrowDate()
+  // Используем дату из тела запроса (клиент знает на какую дату экспресс)
+  // Fallback: завтра — для обратной совместимости
+  const rawDate = req.body?.date
+  const expressDate = (rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate))
+    ? rawDate
+    : getTomorrowDate()
   const userId = req.user.id
   const type = req.body?.type === 'high' ? 'high' : 'standard'
   const sport = req.body?.sport || 'football'
