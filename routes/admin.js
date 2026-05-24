@@ -183,11 +183,36 @@ router.get('/api-status', async (req, res) => {
           'Accept': 'application/json', 'Referer': 'https://www.sofascore.com/', 'Origin': 'https://www.sofascore.com' } })
     ),
 
-    // BallDontLie v2 — проверяем ключ через /v2/nba/teams (лёгкий запрос)
-    check('BallDontLie API', '🎮', 'BALLDONTLIE_KEY', () =>
-      httpProbe({ hostname: 'api.balldontlie.io', path: '/v2/nba/teams', method: 'GET',
-        headers: { 'Authorization': process.env.BALLDONTLIE_KEY, 'Content-Type': 'application/json' } })
-    ),
+    // BallDontLie v2 — точно такой же запрос как в ballDontLieGet
+    check('BallDontLie API', '🎮', 'BALLDONTLIE_KEY', () => new Promise((resolve) => {
+      const start = Date.now()
+      const key = process.env.BALLDONTLIE_KEY || ''
+      const req = https.request({
+        hostname: 'api.balldontlie.io',
+        path: '/v2/nba/teams',
+        method: 'GET',
+        headers: {
+          'Authorization': key,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+      }, (res) => {
+        let body = ''
+        res.on('data', c => body += c)
+        res.on('end', () => {
+          const ms = Date.now() - start
+          const code = res.statusCode
+          console.log(`[BDL probe] ${code} body:`, body.slice(0, 200))
+          if (code >= 200 && code < 300) resolve({ ok: true,  detail: `HTTP ${code}`, ms })
+          else if (code === 401)         resolve({ ok: false, detail: 'HTTP 401 — неверный ключ', ms })
+          else if (code === 429)         resolve({ ok: false, detail: '⚠️ Лимит исчерпан (HTTP 429)', ms })
+          else                           resolve({ ok: false, detail: `HTTP ${code} — body: ${body.slice(0, 80)}`, ms })
+        })
+      })
+      req.on('error', e => resolve({ ok: false, detail: e.message, ms: Date.now() - start }))
+      req.setTimeout(8000, () => { req.destroy(); resolve({ ok: false, detail: 'Таймаут', ms: 8000 }) })
+      req.end()
+    })),
 
     // YuKassa — просто проверяем что ключи настроены (не делаем запрос к платёжке)
     check('ЮКасса (платежи)', '💳', 'YUKASSA_SHOP_ID', async () => {
