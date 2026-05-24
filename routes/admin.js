@@ -189,12 +189,13 @@ router.get('/api-status', async (req, res) => {
       const key = process.env.BALLDONTLIE_KEY || ''
       const req = https.request({
         hostname: 'api.balldontlie.io',
-        path: '/v2/nba/teams',
+        path: '/v2/nba/teams?per_page=1',
         method: 'GET',
         headers: {
           'Authorization': key,
           'Content-Type': 'application/json',
           'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0',
         },
       }, (res) => {
         let body = ''
