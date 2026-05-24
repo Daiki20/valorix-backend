@@ -1137,6 +1137,90 @@ router.get('/debug-football', authenticate, async (req, res) => {
   res.json(result)
 })
 
+// ── GET /express/debug-hockey (admin) — диагностика хоккейного экспресса ─────
+router.get('/debug-hockey', authenticate, async (req, res) => {
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Только для администраторов' })
+
+  const targetDate = getTomorrowDate()
+  const result = {
+    targetDate,
+    sources: {},
+    totalMatches: 0,
+    withOdds: 0,
+    matchesList: [],
+    oddsApiKeySet: !!process.env.ODDS_API_KEY,
+    rapidApiKeySet: !!process.env.RAPIDAPI_KEY,
+    error: null,
+  }
+
+  try {
+    // ── NHL (free API) ────────────────────────────────────────────────────────
+    const nhlMatches = []
+    try {
+      const prevDate = new Date(targetDate)
+      prevDate.setDate(prevDate.getDate() - 1)
+      const data = await httpsGet(`https://api-web.nhle.com/v1/schedule/${targetDate}`)
+      const allowed = new Set([prevDate.toISOString().slice(0, 10), targetDate])
+      for (const day of (data.gameWeek || [])) {
+        if (!allowed.has(day.date)) continue
+        for (const game of (day.games || [])) {
+          if (game.gameState === 'OFF' || game.gameState === 'FINAL') continue
+          const ha = game.homeTeam?.abbrev || ''
+          const aa = game.awayTeam?.abbrev || ''
+          const home = NHL_TEAMS_RU[ha] || ha
+          const away = NHL_TEAMS_RU[aa] || aa
+          if (home && away) nhlMatches.push({ home, away, league: 'НХЛ' })
+        }
+      }
+      result.sources['НХЛ (free API)'] = { count: nhlMatches.length, status: 'ok' }
+    } catch (err) {
+      result.sources['НХЛ (free API)'] = { count: 0, status: 'error', detail: err.message }
+    }
+
+    // ── AllSports/Sofascore: ИИХФ ЧМ, КХЛ, МХЛ, ВХЛ ────────────────────────
+    const leagueMatches = []
+    for (const t of HOCKEY_TOURNAMENTS_EXPRESS) {
+      try {
+        const seasonId = await fetchSeasonIdForExpress(t.id, t.fallbackSeasonId)
+        if (!seasonId) { result.sources[t.league] = { count: 0, status: 'no_season' }; continue }
+        const matches = await fetchTournamentMatchesForExpress({ ...t, seasonId }, targetDate)
+        leagueMatches.push(...matches)
+        result.sources[t.league] = {
+          count: matches.length, status: 'ok',
+          sample: matches.slice(0, 2).map(m => `${m.home} vs ${m.away}`),
+        }
+      } catch (err) {
+        result.sources[t.league] = { count: 0, status: 'error', detail: err.message }
+      }
+    }
+
+    // ── Итого ─────────────────────────────────────────────────────────────────
+    const allMatches = [...nhlMatches, ...leagueMatches]
+    result.totalMatches = allMatches.length
+    result.matchesList = allMatches.map(m => ({ home: m.home, away: m.away, league: m.league }))
+
+    // ── Odds API ──────────────────────────────────────────────────────────────
+    if (process.env.ODDS_API_KEY && allMatches.length > 0) {
+      try {
+        const oddsMap = await fetchHockeyOddsForExpress()
+        const withOdds = allMatches.filter(m => lookupHockeyOdds(m.home, m.away, oddsMap)).length
+        result.withOdds = withOdds
+        result.oddsSample = allMatches.slice(0, 3).map(m => {
+          const odds = lookupHockeyOdds(m.home, m.away, oddsMap)
+          return { match: `${m.home} vs ${m.away}`, hasOdds: !!odds, odds: odds || null }
+        })
+      } catch (err) {
+        result.oddsError = err.message
+      }
+    }
+
+  } catch (err) {
+    result.error = err.message
+  }
+
+  res.json(result)
+})
+
 // ── POST /express/generate (admin) ───────────────────────────────────────────
 router.post('/generate', authenticate, async (req, res) => {
   if (!req.user.is_admin) return res.status(403).json({ error: 'Только для администраторов' })
