@@ -1045,6 +1045,68 @@ router.get('/debug-stats', authenticate, async (req, res) => {
   res.json(result)
 })
 
+// ── GET /express/debug-football (admin) — диагностика футбольного экспресса ──
+router.get('/debug-football', authenticate, async (req, res) => {
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Только для администраторов' })
+
+  const targetDate = getTomorrowDate()
+  const result = {
+    targetDate,
+    sstatsKeySet: !!process.env.SSTATS_API_KEY,
+    leagues: {},
+    totalMatches: 0,
+    matchesWithOdds: 0,
+    matchesList: [],
+    error: null,
+  }
+
+  if (!process.env.SSTATS_API_KEY) {
+    result.error = 'SSTATS_API_KEY не установлен в переменных окружения Railway'
+    return res.json(result)
+  }
+
+  try {
+    // Проверяем каждую лигу отдельно
+    for (const leagueId of ALL_LEAGUE_IDS) {
+      try {
+        const data = await httpsGet(
+          `https://api.sstats.net/Games/list?upcoming=true&leagueid=${leagueId}&limit=10&apikey=${process.env.SSTATS_API_KEY}`
+        )
+        const games = Array.isArray(data?.data) ? data.data : []
+        const todayGames = games.filter(g => g.date?.slice(0, 10) === targetDate)
+        result.leagues[leagueId] = {
+          total: games.length,
+          onTargetDate: todayGames.length,
+          sample: todayGames.slice(0, 3).map(g => `${g.homeTeam?.name} vs ${g.awayTeam?.name}`),
+        }
+      } catch (err) {
+        result.leagues[leagueId] = { error: err.message }
+      }
+    }
+
+    // Полный список матчей через fetchRealMatches
+    const { matches } = await fetchRealMatches(targetDate)
+    result.totalMatches = matches.length
+    result.matchesList = matches.map(m => ({ home: m.home, away: m.away, league: m.league, id: m.id }))
+
+    // Проверяем коэффициенты для первых 3 матчей
+    if (matches.length > 0) {
+      const sample = matches.slice(0, 3)
+      const oddsResults = await Promise.all(sample.map(m => fetchOddsText(m.id)))
+      result.matchesWithOdds = oddsResults.filter(Boolean).length
+      result.oddsSample = sample.map((m, i) => ({
+        match: `${m.home} vs ${m.away}`,
+        hasOdds: !!oddsResults[i],
+        oddsPreview: oddsResults[i]?.slice(0, 120) || null,
+      }))
+    }
+  } catch (err) {
+    result.error = err.message
+  }
+
+  res.json(result)
+})
+
 // ── POST /express/generate (admin) ───────────────────────────────────────────
 router.post('/generate', authenticate, async (req, res) => {
   if (!req.user.is_admin) return res.status(403).json({ error: 'Только для администраторов' })
