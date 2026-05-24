@@ -224,6 +224,126 @@ router.post('/chat', authenticate, async (req, res) => {
   }
 })
 
+// ── BallDontLie API helper ────────────────────────────────────────────────────
+
+function ballDontLieGet(path, params = {}) {
+  return new Promise((resolve, reject) => {
+    if (!process.env.BALLDONTLIE_KEY) { resolve({ data: [] }); return }
+    const parts = []
+    for (const [key, val] of Object.entries(params)) {
+      if (Array.isArray(val)) val.forEach(v => parts.push(`${key}[]=${encodeURIComponent(v)}`))
+      else parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(val)}`)
+    }
+    const qs = parts.join('&')
+    const options = {
+      hostname: 'api.balldontlie.io',
+      path: `/v2${path}${qs ? '?' + qs : ''}`,
+      method: 'GET',
+      headers: { 'Authorization': process.env.BALLDONTLIE_KEY, 'Content-Type': 'application/json' },
+    }
+    const req = https.request(options, (res) => {
+      let data = ''
+      res.on('data', chunk => { data += chunk })
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)) }
+        catch { reject(new Error('BallDontLie parse error')) }
+      })
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+// Compute W/L + avg points from BallDontLie games list
+function computeBasketballForm(games, teamId, venue) {
+  const filtered = (games || [])
+    .filter(g => g.home_team_score > 0 && g.visitor_team_score > 0) // finished
+    .filter(g => {
+      if (venue === 'home') return g.home_team?.id === teamId
+      if (venue === 'away') return g.visitor_team?.id === teamId
+      return g.home_team?.id === teamId || g.visitor_team?.id === teamId
+    })
+    .slice(0, 10)
+  if (!filtered.length) return null
+  let wins = 0, losses = 0, ptsFor = 0, ptsAgainst = 0
+  for (const g of filtered) {
+    const isHome = g.home_team?.id === teamId
+    const tp = isHome ? g.home_team_score : g.visitor_team_score
+    const op = isHome ? g.visitor_team_score : g.home_team_score
+    ptsFor += tp; ptsAgainst += op
+    tp > op ? wins++ : losses++
+  }
+  const count = filtered.length
+  return { gamesCount: count, wins, losses, avgPts: +(ptsFor/count).toFixed(1), avgPtsAllowed: +(ptsAgainst/count).toFixed(1) }
+}
+
+// POST /analyze/basketball-form — real NBA stats with 12h SQLite cache
+router.post('/basketball-form', authenticate, async (req, res) => {
+  const { homeTeam, awayTeam } = req.body || {}
+  if (!homeTeam || !awayTeam) return res.json({})
+  if (!process.env.BALLDONTLIE_KEY) return res.json({ error: 'BALLDONTLIE_KEY not set' })
+
+  const cacheKey = `bball_${homeTeam.toLowerCase().replace(/\s/g,'')}_${awayTeam.toLowerCase().replace(/\s/g,'')}`
+  const cached = cacheGet(cacheKey, 12 * 60 * 60 * 1000)
+  if (cached) { try { return res.json(JSON.parse(cached)) } catch {} }
+
+  try {
+    const now = new Date()
+    const nbaSeason = (now.getMonth() + 1) >= 10 ? now.getFullYear() : now.getFullYear() - 1
+
+    const [homeRes, awayRes] = await Promise.all([
+      ballDontLieGet('/nba/teams', { search: homeTeam }),
+      ballDontLieGet('/nba/teams', { search: awayTeam }),
+    ])
+    const homeData = homeRes.data?.[0]
+    const awayData = awayRes.data?.[0]
+    if (!homeData || !awayData) return res.json({ error: 'Teams not found', homeTeam, awayTeam })
+
+    const homeId = homeData.id, awayId = awayData.id
+
+    const [homeGamesRes, awayGamesRes, standingsRes] = await Promise.allSettled([
+      ballDontLieGet('/nba/games', { team_ids: [homeId], seasons: [nbaSeason], per_page: 25 }),
+      ballDontLieGet('/nba/games', { team_ids: [awayId], seasons: [nbaSeason], per_page: 25 }),
+      ballDontLieGet('/nba/standings', { season: nbaSeason }),
+    ])
+
+    const homeGames  = homeGamesRes.status  === 'fulfilled' ? homeGamesRes.value?.data  || [] : []
+    const awayGames  = awayGamesRes.status  === 'fulfilled' ? awayGamesRes.value?.data  || [] : []
+    const standings  = standingsRes.status  === 'fulfilled' ? standingsRes.value?.data  || [] : []
+
+    const h2h = homeGames.filter(g =>
+      (g.home_team?.id === homeId && g.visitor_team?.id === awayId) ||
+      (g.home_team?.id === awayId && g.visitor_team?.id === homeId)
+    ).filter(g => g.home_team_score > 0).slice(0, 6)
+
+    const homeStanding = standings.find(s => s.team?.id === homeId)
+    const awayStanding = standings.find(s => s.team?.id === awayId)
+
+    const result = {
+      season: nbaSeason,
+      homeTeamName: homeData.full_name,
+      awayTeamName: awayData.full_name,
+      homeForm: computeBasketballForm(homeGames, homeId, 'home'),
+      awayForm: computeBasketballForm(awayGames, awayId, 'away'),
+      homeStanding: homeStanding ? { wins: homeStanding.wins, losses: homeStanding.losses, rank: homeStanding.conference_rank } : null,
+      awayStanding: awayStanding ? { wins: awayStanding.wins, losses: awayStanding.losses, rank: awayStanding.conference_rank } : null,
+      h2h: h2h.map(g => ({
+        date: (g.date || '').slice(0, 10),
+        homeTeam: g.home_team?.full_name,
+        awayTeam: g.visitor_team?.full_name,
+        homeScore: g.home_team_score,
+        awayScore: g.visitor_team_score,
+      })),
+    }
+
+    cacheSet(cacheKey, JSON.stringify(result))
+    res.json(result)
+  } catch (err) {
+    console.error('basketball-form error:', err.message)
+    res.json({ error: err.message })
+  }
+})
+
 // ── sstats backend helpers ────────────────────────────────────────────────────
 
 function sstatsBackendGet(path, params = {}) {
