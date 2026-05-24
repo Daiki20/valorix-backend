@@ -211,4 +211,36 @@ router.get('/transactions', (req, res) => {
   res.json({ transactions: txs, total, pages: Math.ceil(total / limit) })
 })
 
+// DELETE /admin/cache — очистить кэш анализов (все или по паттерну)
+router.delete('/cache', (req, res) => {
+  const { pattern } = req.query
+  try {
+    if (pattern) {
+      const result = db.prepare(`DELETE FROM analysis_cache WHERE cache_key LIKE ?`).run(`%${pattern}%`)
+      res.json({ deleted: result.changes, pattern })
+    } else {
+      const result = db.prepare(`DELETE FROM analysis_cache`).run()
+      res.json({ deleted: result.changes, pattern: 'all' })
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /admin/cache — посмотреть что в кэше
+router.get('/cache', (req, res) => {
+  try {
+    const rows = db.prepare(
+      `SELECT cache_key, created_at, length(content) as size_bytes FROM analysis_cache ORDER BY created_at DESC LIMIT 100`
+    ).all()
+    res.json({ count: rows.length, entries: rows.map(r => ({
+      key: r.cache_key,
+      age_minutes: Math.round((Date.now() - r.created_at) / 60000),
+      size_kb: Math.round(r.size_bytes / 1024 * 10) / 10,
+    })) })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 module.exports = router
