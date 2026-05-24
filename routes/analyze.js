@@ -4,13 +4,14 @@ const https = require('https')
 const { authenticate } = require('../middleware/auth')
 const db = require('../db')
 
-const CACHE_TTL = 3 * 60 * 60 * 1000 // 3 hours — stale before lineups announced
+const CACHE_TTL      = 3 * 60 * 60 * 1000 // 3 hours — analysis cache
+const TEAM_FORM_TTL  = 6 * 60 * 60 * 1000 // 6 hours — team form/h2h cache
 
-function cacheGet(key) {
+function cacheGet(key, ttl = CACHE_TTL) {
   try {
     const row = db.prepare('SELECT content, created_at FROM analysis_cache WHERE cache_key = ?').get(key)
     if (!row) return null
-    if (Date.now() - row.created_at > CACHE_TTL) {
+    if (Date.now() - row.created_at > ttl) {
       db.prepare('DELETE FROM analysis_cache WHERE cache_key = ?').run(key)
       return null
     }
@@ -220,6 +221,109 @@ router.post('/chat', authenticate, async (req, res) => {
   } catch (err) {
     console.error('OpenAI error:', err.message)
     res.status(500).json({ error: err.message })
+  }
+})
+
+// ── sstats backend helpers ────────────────────────────────────────────────────
+
+function sstatsBackendGet(path, params = {}) {
+  return new Promise((resolve, reject) => {
+    if (!process.env.SSTATS_API_KEY) { resolve({ data: [] }); return }
+    const q = new URLSearchParams({ ...params, apikey: process.env.SSTATS_API_KEY }).toString()
+    const options = {
+      hostname: 'api.sstats.net',
+      path: `${path}?${q}`,
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    }
+    const req = https.request(options, (res) => {
+      let data = ''
+      res.on('data', chunk => { data += chunk })
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)) }
+        catch { reject(new Error('sstats parse error')) }
+      })
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+// Compute W/D/L + goals from raw game list filtered by venue
+function computeFormStats(games, teamId, venue) {
+  const filtered = (games || []).filter(g => {
+    if (venue === 'home') return g.homeTeam?.id === teamId
+    if (venue === 'away') return g.awayTeam?.id === teamId
+    return true
+  }).slice(0, 10)
+
+  if (!filtered.length) return null
+
+  let wins = 0, draws = 0, losses = 0, goalsFor = 0, goalsAgainst = 0
+  for (const g of filtered) {
+    const isHome = g.homeTeam?.id === teamId
+    const tf = Number(isHome
+      ? (g.homeFTResult ?? g.homeGoals ?? 0)
+      : (g.awayFTResult ?? g.awayGoals ?? 0))
+    const ta = Number(isHome
+      ? (g.awayFTResult ?? g.awayGoals ?? 0)
+      : (g.homeFTResult ?? g.homeGoals ?? 0))
+    goalsFor += tf
+    goalsAgainst += ta
+    if (tf > ta) wins++
+    else if (tf === ta) draws++
+    else losses++
+  }
+  const count = filtered.length
+  return {
+    gamesCount: count,
+    wins, draws, loses: losses,
+    avgScore:    +(goalsFor  / count).toFixed(2),
+    avgConceded: +(goalsAgainst / count).toFixed(2),
+  }
+}
+
+// POST /analyze/team-form
+// Returns real home/away form + H2H for a pair of team IDs (cached 6h in SQLite)
+router.post('/team-form', authenticate, async (req, res) => {
+  const { homeId, awayId } = req.body || {}
+  if (!homeId || !awayId) return res.json({ homeForm: null, awayForm: null, h2h: [] })
+  if (!process.env.SSTATS_API_KEY) return res.json({ homeForm: null, awayForm: null, h2h: [] })
+
+  const cacheKey = `tf_${homeId}_${awayId}`
+  const cached = cacheGet(cacheKey, TEAM_FORM_TTL)
+  if (cached) {
+    try { return res.json(JSON.parse(cached)) } catch {}
+  }
+
+  try {
+    const [homeGamesRes, awayGamesRes, h2hRes] = await Promise.allSettled([
+      sstatsBackendGet('/Games/list', { ended: true, team: homeId, limit: 20 }),
+      sstatsBackendGet('/Games/list', { ended: true, team: awayId, limit: 20 }),
+      sstatsBackendGet('/Games/list', { ended: true, bothTeams: `${homeId},${awayId}`, limit: 10 }),
+    ])
+
+    const homeGames = homeGamesRes.status === 'fulfilled' ? homeGamesRes.value?.data || [] : []
+    const awayGames = awayGamesRes.status === 'fulfilled' ? awayGamesRes.value?.data || [] : []
+    const h2hGames  = h2hRes.status  === 'fulfilled' ? h2hRes.value?.data  || [] : []
+
+    const result = {
+      homeForm: computeFormStats(homeGames, homeId, 'home'),
+      awayForm: computeFormStats(awayGames, awayId, 'away'),
+      h2h: h2hGames.slice(0, 8).map(g => ({
+        homeTeam:  g.homeTeam?.name || '?',
+        awayTeam:  g.awayTeam?.name || '?',
+        homeScore: g.homeFTResult ?? g.homeGoals ?? '?',
+        awayScore: g.awayFTResult ?? g.awayGoals ?? '?',
+        date: (g.date || '').slice(0, 10),
+      })),
+    }
+
+    cacheSet(cacheKey, JSON.stringify(result))
+    res.json(result)
+  } catch (err) {
+    console.error('team-form error:', err.message)
+    res.json({ homeForm: null, awayForm: null, h2h: [] })
   }
 })
 
