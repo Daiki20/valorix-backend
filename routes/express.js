@@ -1110,7 +1110,13 @@ router.get('/debug-football', authenticate, async (req, res) => {
 // ── POST /express/generate (admin) ───────────────────────────────────────────
 router.post('/generate', authenticate, async (req, res) => {
   if (!req.user.is_admin) return res.status(403).json({ error: 'Только для администраторов' })
-  const expressDate = getTomorrowDate()
+
+  // Поддержка произвольной даты (YYYY-MM-DD) — по умолчанию завтра
+  const rawDate = req.body?.date
+  const expressDate = (rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate))
+    ? rawDate
+    : getTomorrowDate()
+
   const type  = req.body?.type  // 'standard' | 'high' | undefined (both)
   const sport = req.body?.sport || 'football'
 
