@@ -586,4 +586,196 @@ router.post('/team-form', authenticate, async (req, res) => {
   }
 })
 
+// ── BallDontLie universal sport support ───────────────────────────────────────
+
+// Season calculation per sport
+function getBDLSeason(prefix) {
+  const now = new Date()
+  const month = now.getMonth() + 1
+  const year = now.getFullYear()
+  if (prefix === 'nhl') return month >= 10 ? year : year - 1
+  if (prefix === 'nfl') return month >= 9  ? year : year - 1
+  return year // mlb, esports, tennis, mma — calendar year
+}
+
+// Generic W/L + avg score computation from BDL games array
+// Tries home_team/visitor_team fields first, then team1/team2 (esports)
+function computeBDLTeamForm(games, teamId) {
+  if (!games?.length) return null
+  const sample = games[0] || {}
+  const useTeam1 = sample.team1 !== undefined
+  const homeKey   = useTeam1 ? 'team1'       : 'home_team'
+  const visKey    = useTeam1 ? 'team2'        : 'visitor_team'
+  const homeSKey  = useTeam1 ? 'team1_score'  : 'home_team_score'
+  const visSKey   = useTeam1 ? 'team2_score'  : 'visitor_team_score'
+
+  const finished = games.filter(g => {
+    const hs = g[homeSKey], vs = g[visSKey]
+    return hs != null && vs != null && (Number(hs) + Number(vs)) > 0
+  })
+  if (!finished.length) return null
+
+  let wins = 0, losses = 0, scoresFor = 0, scoresAgainst = 0
+  for (const g of finished) {
+    const isHome = g[homeKey]?.id === teamId
+    const tf = Number(isHome ? g[homeSKey] : g[visSKey])
+    const ta = Number(isHome ? g[visSKey]  : g[homeSKey])
+    scoresFor += tf; scoresAgainst += ta
+    tf > ta ? wins++ : losses++
+  }
+  const count = finished.length
+  return { gamesCount: count, wins, losses,
+    avgScore:    +(scoresFor    / count).toFixed(1),
+    avgConceded: +(scoresAgainst / count).toFixed(1) }
+}
+
+// Fetch team stats for any BDL team sport (nhl, nfl, mlb, cs2, dota2, lol, valorant)
+async function getBDLTeamForm(prefix, homeTeam, awayTeam) {
+  const season = getBDLSeason(prefix)
+  const [homeRes, awayRes] = await Promise.all([
+    ballDontLieGet(`/${prefix}/teams`, { search: homeTeam }),
+    ballDontLieGet(`/${prefix}/teams`, { search: awayTeam }),
+  ])
+  const homeData = homeRes?.data?.[0]
+  const awayData = awayRes?.data?.[0]
+  if (!homeData || !awayData) return { error: 'teams not found', homeTeam, awayTeam }
+
+  const homeId = homeData.id, awayId = awayData.id
+  const teamName = t => t.full_name || t.name || String(t.id)
+
+  const [homeGamesRes, awayGamesRes, standingsRes] = await Promise.allSettled([
+    ballDontLieGet(`/${prefix}/games`, { team_ids: [homeId], seasons: [season], per_page: 25 }),
+    ballDontLieGet(`/${prefix}/games`, { team_ids: [awayId], seasons: [season], per_page: 25 }),
+    ballDontLieGet(`/${prefix}/standings`, { season }).catch(() => ({ data: [] })),
+  ])
+
+  const homeGames  = homeGamesRes.status  === 'fulfilled' ? homeGamesRes.value?.data  || [] : []
+  const awayGames  = awayGamesRes.status  === 'fulfilled' ? awayGamesRes.value?.data  || [] : []
+  const standings  = standingsRes.status  === 'fulfilled' ? standingsRes.value?.data  || [] : []
+
+  // H2H: games involving both teams
+  const sample = homeGames[0] || {}
+  const useTeam1 = sample.team1 !== undefined
+  const hk = useTeam1 ? 'team1' : 'home_team', vk = useTeam1 ? 'team2' : 'visitor_team'
+  const hsk = useTeam1 ? 'team1_score' : 'home_team_score'
+
+  const h2h = homeGames.filter(g => {
+    const ht = g[hk]?.id, vt = g[vk]?.id
+    return (ht === homeId && vt === awayId) || (ht === awayId && vt === homeId)
+  }).filter(g => (g[hsk] ?? 0) > 0).slice(0, 6)
+
+  const homeStanding = standings.find(s => s.team?.id === homeId)
+  const awayStanding = standings.find(s => s.team?.id === awayId)
+
+  return {
+    sport: prefix, season,
+    homeTeamName: teamName(homeData),
+    awayTeamName: teamName(awayData),
+    homeForm: computeBDLTeamForm(homeGames.filter(g => g[hk]?.id === homeId), homeId),
+    awayForm: computeBDLTeamForm(awayGames.filter(g => g[vk]?.id === awayId), awayId),
+    homeStanding: homeStanding ? { wins: homeStanding.wins, losses: homeStanding.losses, rank: homeStanding.conference_rank } : null,
+    awayStanding: awayStanding ? { wins: awayStanding.wins, losses: awayStanding.losses, rank: awayStanding.conference_rank } : null,
+    h2h: h2h.map(g => ({
+      date: (g.date || '').slice(0, 10),
+      homeTeam: teamName(g[hk] || {}),
+      awayTeam: teamName(g[vk] || {}),
+      homeScore: g[hsk],
+      awayScore: g[useTeam1 ? 'team2_score' : 'visitor_team_score'],
+    })),
+    source: 'balldontlie',
+  }
+}
+
+// Fetch player stats for individual sports (tennis, mma)
+async function getBDLPlayerForm(prefix, player1, player2) {
+  const year = new Date().getFullYear()
+  const playerEndpoint = prefix === 'mma' ? 'fighters' : 'players'
+  const matchEndpoint  = prefix === 'mma' ? 'bouts'    : 'matches'
+
+  const [p1Res, p2Res] = await Promise.all([
+    ballDontLieGet(`/${prefix}/${playerEndpoint}`, { search: player1, per_page: 5 }),
+    ballDontLieGet(`/${prefix}/${playerEndpoint}`, { search: player2, per_page: 5 }),
+  ])
+  const p1 = p1Res?.data?.[0], p2 = p2Res?.data?.[0]
+  if (!p1 || !p2) return { error: 'players not found', player1, player2 }
+
+  const pName = p => p.name || `${p.first_name || ''} ${p.last_name || ''}`.trim() || String(p.id)
+
+  const [p1MatchesRes, p2MatchesRes] = await Promise.allSettled([
+    ballDontLieGet(`/${prefix}/${matchEndpoint}`, { player_ids: [p1.id], seasons: [year], per_page: 20 }),
+    ballDontLieGet(`/${prefix}/${matchEndpoint}`, { player_ids: [p2.id], seasons: [year], per_page: 20 }),
+  ])
+  const p1Matches = p1MatchesRes.status === 'fulfilled' ? p1MatchesRes.value?.data || [] : []
+  const p2Matches = p2MatchesRes.status === 'fulfilled' ? p2MatchesRes.value?.data || [] : []
+
+  const computePlayerForm = (matches, playerId) => {
+    const finished = matches.filter(m => m.winner_id != null || m.winner?.id != null)
+    if (!finished.length) return null
+    const wins = finished.filter(m => (m.winner_id ?? m.winner?.id) === playerId).length
+    return { gamesCount: finished.length, wins, losses: finished.length - wins }
+  }
+
+  // H2H: matches where both players appeared
+  const h2h = p1Matches.filter(m => {
+    const ids = (m.players || m.fighters || []).map(p => p.id)
+    return ids.includes(p1.id) && ids.includes(p2.id)
+  }).slice(0, 5)
+
+  return {
+    sport: prefix,
+    player1Name: pName(p1),
+    player2Name: pName(p2),
+    player1Form: computePlayerForm(p1Matches, p1.id),
+    player2Form: computePlayerForm(p2Matches, p2.id),
+    h2h: h2h.map(m => ({
+      date: (m.date || '').slice(0, 10),
+      winnerId: m.winner_id ?? m.winner?.id,
+      winnerName: m.winner?.name ?? (m.winner_id === p1.id ? pName(p1) : pName(p2)),
+      result: m.result || m.score || '',
+    })),
+    source: 'balldontlie',
+  }
+}
+
+// Sport routing table: frontend sport → BDL prefix + type
+const SPORT_MAP = {
+  hockey:   { prefix: 'nhl',        type: 'team'       },
+  nfl:      { prefix: 'nfl',        type: 'team'       },
+  baseball: { prefix: 'mlb',        type: 'team'       },
+  cs2:      { prefix: 'cs2',        type: 'team'       },
+  dota2:    { prefix: 'dota2',      type: 'team'       },
+  lol:      { prefix: 'lol',        type: 'team'       },
+  valorant: { prefix: 'valorant',   type: 'team'       },
+  tennis:   { prefix: 'atp_tennis', type: 'individual' },
+  mma:      { prefix: 'mma',        type: 'individual' },
+}
+
+// POST /analyze/sport-form — universal BDL endpoint for any non-football/basketball sport
+router.post('/sport-form', authenticate, async (req, res) => {
+  const { sport, homeTeam, awayTeam } = req.body || {}
+  if (!sport || !homeTeam || !awayTeam) return res.status(400).json({ error: 'sport, homeTeam, awayTeam required' })
+  if (!process.env.BALLDONTLIE_KEY) return res.json({ error: 'BALLDONTLIE_KEY not configured', sport })
+
+  const cacheKey = `bdl_${sport}_${homeTeam.toLowerCase().replace(/\s/g, '')}_${awayTeam.toLowerCase().replace(/\s/g, '')}`
+  const cached = cacheGet(cacheKey, 12 * 60 * 60 * 1000)
+  if (cached) { try { return res.json(JSON.parse(cached)) } catch {} }
+
+  const config = SPORT_MAP[sport]
+  if (!config) return res.json({ error: `Unknown sport: ${sport}`, sport })
+
+  try {
+    let result
+    if (config.type === 'team') {
+      result = await getBDLTeamForm(config.prefix, homeTeam, awayTeam)
+    } else {
+      result = await getBDLPlayerForm(config.prefix, homeTeam, awayTeam)
+    }
+    if (!result.error) cacheSet(cacheKey, JSON.stringify(result))
+    return res.json(result)
+  } catch (err) {
+    console.error(`BDL sport-form error [${sport}]:`, err.message)
+    return res.json({ error: err.message, sport })
+  }
+})
+
 module.exports = router
