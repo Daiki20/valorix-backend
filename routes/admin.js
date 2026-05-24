@@ -183,6 +183,12 @@ router.get('/api-status', async (req, res) => {
           'Accept': 'application/json', 'Referer': 'https://www.sofascore.com/', 'Origin': 'https://www.sofascore.com' } })
     ),
 
+    // BallDontLie v2 — лёгкий запрос к NBA teams (не тратит квоту)
+    check('BallDontLie API', '🎮', 'BALLDONTLIE_KEY', () =>
+      httpProbe({ hostname: 'api.balldontlie.io', path: '/v2/nba/teams?search=Lakers', method: 'GET',
+        headers: { 'Authorization': process.env.BALLDONTLIE_KEY } })
+    ),
+
     // YuKassa — просто проверяем что ключи настроены (не делаем запрос к платёжке)
     check('ЮКасса (платежи)', '💳', 'YUKASSA_SHOP_ID', async () => {
       const hasSecret = !!process.env.YUKASSA_SECRET_KEY

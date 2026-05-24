@@ -737,6 +737,115 @@ async function getBDLPlayerForm(prefix, player1, player2) {
   }
 }
 
+// ── AllSports fallback for sport-form (uses same RAPIDAPI_KEY as basketball) ──
+
+// Generic AllSports getter for any sport path (hockey, tennis, esports, mma, etc.)
+function allSportsGet(sportPath, queryString) {
+  return new Promise((resolve, reject) => {
+    const key = process.env.RAPIDAPI_KEY
+    if (!key) { resolve({ result: [] }); return }
+    const options = {
+      hostname: ALLSPORTS_BASKETBALL_HOST, // allsportsapi2.p.rapidapi.com
+      path: `/api/${sportPath}/?${queryString}`,
+      method: 'GET',
+      timeout: 8000,
+      headers: {
+        'X-RapidAPI-Key': key,
+        'X-RapidAPI-Host': ALLSPORTS_BASKETBALL_HOST,
+        'Accept': 'application/json',
+      },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)) }
+        catch { reject(new Error(`allsports-${sportPath} parse error`)) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error(`allsports-${sportPath} timeout`)) })
+    req.end()
+  })
+}
+
+// AllSports sport path mapping (sports not listed here → no fallback)
+const ALLSPORTS_SPORT_PATH = {
+  hockey:   'hockey',
+  cs2:      'esports',
+  dota2:    'esports',
+  lol:      'esports',
+  valorant: 'esports',
+  tennis:   'tennis',
+  mma:      'mma',
+}
+
+// Generic AllSports form fallback — searches team by name, fetches last 45 days fixtures
+async function getFormFromAllSports(sport, homeTeam, awayTeam) {
+  const sportPath = ALLSPORTS_SPORT_PATH[sport]
+  if (!sportPath || !process.env.RAPIDAPI_KEY) return null
+
+  try {
+    const normTeam = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+    const findTeam = (teams, query) => {
+      const q = normTeam(query)
+      return teams.find(t => {
+        const n = normTeam(t.team_name || t.player_name || '')
+        return n === q || n.includes(q) || q.includes(n)
+      }) || null
+    }
+
+    // Search teams by name (AllSports supports teamName= for most sports)
+    const [homeTeamsRes, awayTeamsRes] = await Promise.all([
+      allSportsGet(sportPath, `met=Teams&teamName=${encodeURIComponent(homeTeam)}`).catch(() => ({ result: [] })),
+      allSportsGet(sportPath, `met=Teams&teamName=${encodeURIComponent(awayTeam)}`).catch(() => ({ result: [] })),
+    ])
+
+    const homeTeams = homeTeamsRes?.result || []
+    const awayTeams = awayTeamsRes?.result || []
+    const homeData  = findTeam(homeTeams, homeTeam)
+    const awayData  = findTeam(awayTeams, awayTeam)
+    if (!homeData || !awayData) return null
+
+    const homeKey = homeData.team_key, awayKey = awayData.team_key
+    const today  = new Date().toISOString().slice(0, 10)
+    const past45 = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+
+    const [homeRes, awayRes] = await Promise.all([
+      allSportsGet(sportPath, `met=Fixtures&teamId=${homeKey}&from=${past45}&to=${today}`).catch(() => ({ result: [] })),
+      allSportsGet(sportPath, `met=Fixtures&teamId=${awayKey}&from=${past45}&to=${today}`).catch(() => ({ result: [] })),
+    ])
+
+    const homeFixtures = homeRes?.result || []
+    const awayFixtures = awayRes?.result || []
+    if (!homeFixtures.length && !awayFixtures.length) return null
+
+    const h2hRaw = homeFixtures.filter(f =>
+      String(f.home_team_key) === String(awayKey) || String(f.away_team_key) === String(awayKey)
+    ).filter(f => parseAllSportsScore(f.event_final_result)).slice(0, 6)
+
+    // Reuse basketball form helper — same AllSports fixture structure
+    const hf = computeBasketballFormAllSports(homeFixtures, homeKey, 'home')
+    const af = computeBasketballFormAllSports(awayFixtures, awayKey, 'away')
+
+    return {
+      source: 'allsports',
+      sport,
+      homeTeamName: homeData.team_name,
+      awayTeamName: awayData.team_name,
+      homeForm: hf ? { gamesCount: hf.gamesCount, wins: hf.wins, losses: hf.losses, avgScore: hf.avgPts, avgConceded: hf.avgPtsAllowed } : null,
+      awayForm: af ? { gamesCount: af.gamesCount, wins: af.wins, losses: af.losses, avgScore: af.avgPts, avgConceded: af.avgPtsAllowed } : null,
+      h2h: h2hRaw.map(f => {
+        const score = parseAllSportsScore(f.event_final_result)
+        return { date: f.event_date?.slice(0, 10), homeTeam: f.event_home_team, awayTeam: f.event_away_team, homeScore: score?.home, awayScore: score?.away }
+      }),
+    }
+  } catch (err) {
+    console.error(`allsports fallback error [${sport}]:`, err.message)
+    return null
+  }
+}
+
 // Sport routing table: frontend sport → BDL prefix + type
 const SPORT_MAP = {
   hockey:   { prefix: 'nhl',        type: 'team'       },
@@ -750,11 +859,10 @@ const SPORT_MAP = {
   mma:      { prefix: 'mma',        type: 'individual' },
 }
 
-// POST /analyze/sport-form — universal BDL endpoint for any non-football/basketball sport
+// POST /analyze/sport-form — BDL primary + AllSports fallback
 router.post('/sport-form', authenticate, async (req, res) => {
   const { sport, homeTeam, awayTeam } = req.body || {}
   if (!sport || !homeTeam || !awayTeam) return res.status(400).json({ error: 'sport, homeTeam, awayTeam required' })
-  if (!process.env.BALLDONTLIE_KEY) return res.json({ error: 'BALLDONTLIE_KEY not configured', sport })
 
   const cacheKey = `bdl_${sport}_${homeTeam.toLowerCase().replace(/\s/g, '')}_${awayTeam.toLowerCase().replace(/\s/g, '')}`
   const cached = cacheGet(cacheKey, 12 * 60 * 60 * 1000)
@@ -763,19 +871,30 @@ router.post('/sport-form', authenticate, async (req, res) => {
   const config = SPORT_MAP[sport]
   if (!config) return res.json({ error: `Unknown sport: ${sport}`, sport })
 
-  try {
-    let result
-    if (config.type === 'team') {
-      result = await getBDLTeamForm(config.prefix, homeTeam, awayTeam)
-    } else {
-      result = await getBDLPlayerForm(config.prefix, homeTeam, awayTeam)
+  // ── Step 1: BallDontLie ───────────────────────────────────────────────────
+  if (process.env.BALLDONTLIE_KEY) {
+    try {
+      const result = config.type === 'team'
+        ? await getBDLTeamForm(config.prefix, homeTeam, awayTeam)
+        : await getBDLPlayerForm(config.prefix, homeTeam, awayTeam)
+      if (!result.error) {
+        cacheSet(cacheKey, JSON.stringify(result))
+        return res.json(result)
+      }
+      console.warn(`BDL sport-form no data [${sport}]: ${result.error}`)
+    } catch (err) {
+      console.error(`BDL sport-form error [${sport}]:`, err.message)
     }
-    if (!result.error) cacheSet(cacheKey, JSON.stringify(result))
-    return res.json(result)
-  } catch (err) {
-    console.error(`BDL sport-form error [${sport}]:`, err.message)
-    return res.json({ error: err.message, sport })
   }
+
+  // ── Step 2: AllSports fallback ────────────────────────────────────────────
+  const fallback = await getFormFromAllSports(sport, homeTeam, awayTeam)
+  if (fallback) {
+    cacheSet(cacheKey, JSON.stringify(fallback))
+    return res.json(fallback)
+  }
+
+  res.json({ error: 'Both BallDontLie and AllSports unavailable', sport })
 })
 
 module.exports = router
