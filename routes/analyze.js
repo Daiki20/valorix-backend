@@ -224,6 +224,137 @@ router.post('/chat', authenticate, async (req, res) => {
   }
 })
 
+// ── AllSports basketball fallback (uses existing RAPIDAPI_KEY) ───────────────
+
+const ALLSPORTS_BASKETBALL_HOST = 'allsportsapi2.p.rapidapi.com'
+const NBA_LEAGUE_ID = 766
+
+function allSportsBasketGet(queryString) {
+  return new Promise((resolve, reject) => {
+    const key = process.env.RAPIDAPI_KEY
+    if (!key) { resolve({ result: [] }); return }
+    const options = {
+      hostname: ALLSPORTS_BASKETBALL_HOST,
+      path: `/api/basketball/?${queryString}`,
+      method: 'GET',
+      timeout: 8000,
+      headers: {
+        'X-RapidAPI-Key': key,
+        'X-RapidAPI-Host': ALLSPORTS_BASKETBALL_HOST,
+        'Accept': 'application/json',
+      },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)) }
+        catch { reject(new Error('allsports-basketball parse error')) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('allsports-basketball timeout')) })
+    req.end()
+  })
+}
+
+// Parse "120 - 115" → { home: 120, away: 115 }
+function parseAllSportsScore(str) {
+  if (!str) return null
+  const parts = (str + '').split('-').map(s => parseInt(s.trim()))
+  if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) return { home: parts[0], away: parts[1] }
+  return null
+}
+
+function computeBasketballFormAllSports(fixtures, teamKey, venue) {
+  const filtered = (fixtures || [])
+    .filter(f => f.event_status === 'Finished' || f.event_final_result)
+    .filter(f => {
+      if (venue === 'home') return String(f.home_team_key) === String(teamKey)
+      if (venue === 'away') return String(f.away_team_key) === String(teamKey)
+      return String(f.home_team_key) === String(teamKey) || String(f.away_team_key) === String(teamKey)
+    })
+    .slice(0, 10)
+
+  if (!filtered.length) return null
+  let wins = 0, losses = 0, ptsFor = 0, ptsAgainst = 0
+  for (const f of filtered) {
+    const score = parseAllSportsScore(f.event_final_result)
+    if (!score) continue
+    const isHome = String(f.home_team_key) === String(teamKey)
+    const tp = isHome ? score.home : score.away
+    const op = isHome ? score.away : score.home
+    ptsFor += tp; ptsAgainst += op
+    tp > op ? wins++ : losses++
+  }
+  const count = filtered.length
+  return { gamesCount: count, wins, losses, avgPts: +(ptsFor/count).toFixed(1), avgPtsAllowed: +(ptsAgainst/count).toFixed(1) }
+}
+
+async function getBasketballFormFromAllSports(homeTeam, awayTeam) {
+  if (!process.env.RAPIDAPI_KEY) return null
+  try {
+    // Step 1: get all NBA teams (cached)
+    const teamsCacheKey = `allsports_nba_teams`
+    let teams = null
+    const cached = cacheGet(teamsCacheKey, 24 * 60 * 60 * 1000) // 24h
+    if (cached) {
+      teams = JSON.parse(cached)
+    } else {
+      const res = await allSportsBasketGet(`met=Teams&leagueId=${NBA_LEAGUE_ID}`)
+      teams = res?.result || []
+      if (teams.length) cacheSet(teamsCacheKey, JSON.stringify(teams))
+    }
+    if (!teams.length) return null
+
+    // Step 2: fuzzy match team names
+    const normTeam = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+    const findTeam = (query) => {
+      const q = normTeam(query)
+      return teams.find(t => {
+        const n = normTeam(t.team_name)
+        return n === q || n.includes(q) || q.includes(n)
+      }) || null
+    }
+    const homeData = findTeam(homeTeam)
+    const awayData = findTeam(awayTeam)
+    if (!homeData || !awayData) return null
+
+    const homeKey = homeData.team_key, awayKey = awayData.team_key
+    const today = new Date().toISOString().slice(0, 10)
+    const past45 = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+
+    // Step 3: fetch fixtures for both teams
+    const [homeRes, awayRes] = await Promise.all([
+      allSportsBasketGet(`met=Fixtures&teamId=${homeKey}&from=${past45}&to=${today}`),
+      allSportsBasketGet(`met=Fixtures&teamId=${awayKey}&from=${past45}&to=${today}`),
+    ])
+    const homeFixtures = homeRes?.result || []
+    const awayFixtures = awayRes?.result || []
+
+    // Step 4: H2H from home team fixtures
+    const h2hRaw = homeFixtures.filter(f =>
+      String(f.home_team_key) === String(awayKey) || String(f.away_team_key) === String(awayKey)
+    ).filter(f => parseAllSportsScore(f.event_final_result)).slice(0, 6)
+
+    return {
+      source: 'allsports',
+      homeTeamName: homeData.team_name,
+      awayTeamName: awayData.team_name,
+      homeForm: computeBasketballFormAllSports(homeFixtures, homeKey, 'home'),
+      awayForm: computeBasketballFormAllSports(awayFixtures, awayKey, 'away'),
+      homeStanding: null, awayStanding: null,
+      h2h: h2hRaw.map(f => {
+        const score = parseAllSportsScore(f.event_final_result)
+        return { date: f.event_date?.slice(0, 10), homeTeam: f.event_home_team, awayTeam: f.event_away_team, homeScore: score?.home, awayScore: score?.away }
+      }),
+    }
+  } catch (err) {
+    console.error('allsports-basketball fallback error:', err.message)
+    return null
+  }
+}
+
 // ── BallDontLie API helper ────────────────────────────────────────────────────
 
 function ballDontLieGet(path, params = {}) {
@@ -337,11 +468,19 @@ router.post('/basketball-form', authenticate, async (req, res) => {
     }
 
     cacheSet(cacheKey, JSON.stringify(result))
-    res.json(result)
+    return res.json(result)
   } catch (err) {
-    console.error('basketball-form error:', err.message)
-    res.json({ error: err.message })
+    console.error('BallDontLie error, trying AllSports fallback:', err.message)
   }
+
+  // ── Fallback: AllSports basketball ────────────────────────────────────────
+  const fallback = await getBasketballFormFromAllSports(homeTeam, awayTeam)
+  if (fallback) {
+    cacheSet(cacheKey, JSON.stringify(fallback))
+    return res.json(fallback)
+  }
+
+  res.json({ error: 'Both BallDontLie and AllSports unavailable' })
 })
 
 // ── sstats backend helpers ────────────────────────────────────────────────────
