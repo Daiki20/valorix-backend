@@ -183,37 +183,48 @@ router.get('/api-status', async (req, res) => {
           'Accept': 'application/json', 'Referer': 'https://www.sofascore.com/', 'Origin': 'https://www.sofascore.com' } })
     ),
 
-    // BallDontLie v2 — точно такой же запрос как в ballDontLieGet
-    check('BallDontLie API', '🎮', 'BALLDONTLIE_KEY', () => new Promise((resolve) => {
-      const start = Date.now()
-      const key = process.env.BALLDONTLIE_KEY || ''
-      const req = https.request({
-        hostname: 'api.balldontlie.io',
-        path: '/v2/nba/teams?per_page=1',
-        method: 'GET',
-        headers: {
-          'Authorization': key,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'User-Agent': 'Mozilla/5.0',
-        },
-      }, (res) => {
-        let body = ''
-        res.on('data', c => body += c)
-        res.on('end', () => {
-          const ms = Date.now() - start
-          const code = res.statusCode
-          console.log(`[BDL probe] ${code} body:`, body.slice(0, 200))
-          if (code >= 200 && code < 300) resolve({ ok: true,  detail: `HTTP ${code}`, ms })
-          else if (code === 401)         resolve({ ok: false, detail: 'HTTP 401 — неверный ключ', ms })
-          else if (code === 429)         resolve({ ok: false, detail: '⚠️ Лимит исчерпан (HTTP 429)', ms })
-          else                           resolve({ ok: false, detail: `HTTP ${code} — body: ${body.slice(0, 80)}`, ms })
+    // BallDontLie — пробуем v2 и v1 по очереди
+    check('BallDontLie API', '🎮', 'BALLDONTLIE_KEY', async () => {
+      const key = (process.env.BALLDONTLIE_KEY || '').trim()
+
+      // helper: probe one path, returns { ok, detail, ms }
+      const probe = (path, authHeader) => new Promise((resolve) => {
+        const start = Date.now()
+        const req = https.request({
+          hostname: 'api.balldontlie.io',
+          path,
+          method: 'GET',
+          headers: { 'Authorization': authHeader, 'Accept': 'application/json' },
+        }, (res) => {
+          let body = ''
+          res.on('data', c => body += c)
+          res.on('end', () => {
+            const ms = Date.now() - start
+            const code = res.statusCode
+            console.log(`[BDL probe] ${path} → ${code}:`, body.slice(0, 120))
+            resolve({ ok: code >= 200 && code < 300, code, detail: `HTTP ${code}`, ms, body: body.slice(0, 80) })
+          })
         })
+        req.on('error', e => resolve({ ok: false, code: 0, detail: e.message, ms: Date.now() - start, body: '' }))
+        req.setTimeout(7000, () => { req.destroy(); resolve({ ok: false, code: 0, detail: 'Таймаут', ms: 7000, body: '' }) })
+        req.end()
       })
-      req.on('error', e => resolve({ ok: false, detail: e.message, ms: Date.now() - start }))
-      req.setTimeout(8000, () => { req.destroy(); resolve({ ok: false, detail: 'Таймаут', ms: 8000 }) })
-      req.end()
-    })),
+
+      // Try 1: v2 with raw key
+      let r = await probe('/v2/nba/teams?per_page=1', key)
+      if (r.ok) return { ok: true, detail: `HTTP ${r.code} (v2, raw key)`, ms: r.ms }
+
+      // Try 2: v2 with Bearer prefix
+      r = await probe('/v2/nba/teams?per_page=1', `Bearer ${key}`)
+      if (r.ok) return { ok: true, detail: `HTTP ${r.code} (v2, Bearer)`, ms: r.ms }
+
+      // Try 3: v1 free API (no auth needed, just confirm connectivity)
+      r = await probe('/v1/nba/teams?per_page=1', key)
+      if (r.ok) return { ok: true, detail: `HTTP ${r.code} (v1 endpoint)`, ms: r.ms }
+
+      // All failed — report last error
+      return { ok: false, detail: `Все пути вернули 404/ошибку. Проверь ключ в Railway`, ms: r.ms }
+    }),
 
     // YuKassa — просто проверяем что ключи настроены (не делаем запрос к платёжке)
     check('ЮКасса (платежи)', '💳', 'YUKASSA_SHOP_ID', async () => {
