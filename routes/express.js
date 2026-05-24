@@ -885,6 +885,9 @@ router.get('/today', async (req, res) => {
       } catch {}
     }
 
+    // expressDate нужен для хоккея и других видов спорта (стандартная логика)
+    const expressDate = getTomorrowDate()
+
     // ── Football: smart date search (завтра → сегодня → послезавтра → +3) ─────
     if (sport === 'football') {
       // Кандидаты в порядке приоритета: завтра первый (основной режим),
