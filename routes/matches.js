@@ -86,6 +86,78 @@ async function getFonbetData() {
   return fonbetCache
 }
 
+// ── League importance score (higher = shown first) ───────────────────────────
+function getLeagueScore(sport, leagueName) {
+  const l = (leagueName || '').toLowerCase()
+
+  // Youth / amateur / regional — always bottom regardless of sport
+  if (/\bдо\s*(16|17|18|19|20|21|23)\b|u(16|17|18|19|20|21|23)\b|молодёж|юнош|любит|аматор|amateur|женщ|women|female/.test(l)) return 20
+
+  if (sport === 'football') {
+    if (/лига чемпионов|champions league|лч ucl/.test(l))               return 1000
+    if (/лига европы|europa league|лe uel/.test(l))                     return 950
+    if (/конференц.лига|conference league/.test(l))                      return 900
+    if (/англия.*премьер|premier league|апл/.test(l))                    return 850
+    if (/испания.*ла лига|la liga|примера дивизион/.test(l))             return 840
+    if (/германия.*бундеслига[^2]|бундеслига[^2]/.test(l))              return 830
+    if (/италия.*серия а[^б]|serie a/.test(l))                           return 820
+    if (/франция.*лига 1|ligue 1/.test(l))                               return 810
+    if (/россия.*рпл|рпл|российская премьер|tnf|тинькофф рпл/.test(l))  return 800
+    if (/португалия.*примейра|primeira liga/.test(l))                    return 780
+    if (/нидерланды.*эредивизи|eredivisie/.test(l))                      return 760
+    if (/турция.*суперлига|süper lig|турецкая суперлига/.test(l))        return 750
+    if (/бельгия|шотландия.*прем|греция.*суперлига/.test(l))             return 720
+    if (/украина.*прем|португалия.*куп|копа дель рей|кубок/.test(l))    return 700
+    if (/бразилия.*серия а|серия а.*бразил|brasileirao/.test(l))        return 680
+    if (/аргентина.*примера|аргентина.*лига/.test(l))                    return 660
+    if (/млс|mls|лига мекс|liga mx/.test(l))                             return 600
+    if (/бундеслига 2|серия б|лига 2|чемпионшип/.test(l))               return 400
+    if (/третья|3.* дивизион|третий/.test(l))                            return 200
+    return 500
+  }
+
+  if (sport === 'hockey') {
+    if (/нхл|nhl/.test(l))                                               return 1000
+    if (/чемпионат мира|iihf world/.test(l))                             return 950
+    if (/кхл/.test(l))                                                    return 900
+    if (/вхл/.test(l))                                                    return 700
+    if (/мхл/.test(l))                                                    return 600
+    if (/ahl|ахл/.test(l))                                               return 500
+    return 400
+  }
+
+  if (sport === 'basketball') {
+    if (/нба|nba/.test(l))                                               return 1000
+    if (/евролига|euroleague/.test(l))                                   return 950
+    if (/еврокубок|eurocup/.test(l))                                     return 900
+    if (/втб|vtb|единая лига/.test(l))                                   return 800
+    if (/acb|испания.*баскет/.test(l))                                   return 750
+    if (/bbl|германия.*баскет/.test(l))                                  return 700
+    if (/pro a|франция.*баскет/.test(l))                                 return 680
+    return 500
+  }
+
+  if (['cs2', 'dota2', 'lol', 'valorant'].includes(sport)) {
+    if (/major|world championship|the international|мировой чемп/.test(l)) return 1000
+    if (/pro league|blast premier|esl pro|pgl|iem|vct masters/.test(l))    return 900
+    if (/regional|esl challenger|tier.*1|vpn prime/.test(l))               return 700
+    if (/qualifier|open|tier.*2/.test(l))                                   return 400
+    return 600
+  }
+
+  if (sport === 'tennis') {
+    if (/grand slam|ролан гаррос|wimbledon|уимблдон|us open|australian|австралийский/.test(l)) return 1000
+    if (/masters.*1000|мастерс|monte.carlo|мадрид|рим|торонто|цинциннати|шанхай|париж/.test(l)) return 900
+    if (/atp.*500|500/.test(l))                                            return 800
+    if (/atp.*250|250/.test(l))                                            return 700
+    if (/challenger/.test(l))                                              return 500
+    if (/itf/.test(l))                                                     return 300
+    return 600
+  }
+
+  return 500
+}
+
 function detectEsportType(leagueName) {
   const l = (leagueName || '').toLowerCase()
   if (l.includes('cs2') || l.includes('counter-strike')) return 'cs2'
@@ -125,8 +197,9 @@ async function getFonbetSportEvents(rootSportId, limit = 80) {
     })
     .filter(e => e.odds1x2)
     .sort((a, b) => {
-      if (a.isLive && !b.isLive) return -1
-      if (!a.isLive && b.isLive) return 1
+      const sa = getLeagueScore(a.sport, a.league)
+      const sb = getLeagueScore(b.sport, b.league)
+      if (sa !== sb) return sb - sa
       return new Date(a.rawDate) - new Date(b.rawDate)
     })
     .slice(0, limit)
@@ -137,7 +210,7 @@ async function getFonbetSportEvents(rootSportId, limit = 80) {
 // GET /matches/football — Fonbet football (Line + Live with odds)
 router.get('/football', async (req, res) => {
   try {
-    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.football, 100)
+    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.football, 20)
     console.log(`[matches/football] Fonbet: ${games.length} games`)
     res.json({ data: games })
   } catch (err) {
@@ -149,7 +222,7 @@ router.get('/football', async (req, res) => {
 // GET /matches/esports — Fonbet esports (CS2, Dota2, LoL, Valorant)
 router.get('/esports', async (req, res) => {
   try {
-    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.esports, 80)
+    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.esports, 20)
     console.log(`[matches/esports] Fonbet: ${games.length} games`)
     res.json({ data: games })
   } catch (err) {
@@ -161,7 +234,7 @@ router.get('/esports', async (req, res) => {
 // GET /matches/tennis — Fonbet tennis
 router.get('/tennis', async (req, res) => {
   try {
-    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.tennis, 60)
+    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.tennis, 20)
     console.log(`[matches/tennis] Fonbet: ${games.length} games`)
     res.json({ data: games })
   } catch (err) {
@@ -173,7 +246,7 @@ router.get('/tennis', async (req, res) => {
 // GET /matches/basketball-fonbet — Fonbet basketball (EuroLeague, VTB, NBA etc)
 router.get('/basketball-fonbet', async (req, res) => {
   try {
-    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.basketball, 60)
+    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.basketball, 20)
     console.log(`[matches/basketball-fonbet] Fonbet: ${games.length} games`)
     res.json({ data: games })
   } catch (err) {
@@ -185,7 +258,7 @@ router.get('/basketball-fonbet', async (req, res) => {
 // GET /matches/hockey-fonbet — Fonbet hockey (КХЛ, НХЛ, ВХЛ, МХЛ, ЧМ, etc.)
 router.get('/hockey-fonbet', async (req, res) => {
   try {
-    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.hockey, 100)
+    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.hockey, 20)
     console.log(`[matches/hockey-fonbet] Fonbet: ${games.length} games`)
     res.json({ data: games })
   } catch (err) {
@@ -219,6 +292,13 @@ router.get('/live-all', async (req, res) => {
           odds1x2: oddsMap[e.id] || null,
         }
       })
+      .sort((a, b) => {
+        const sa = getLeagueScore(a.sport, a.league)
+        const sb = getLeagueScore(b.sport, b.league)
+        if (sa !== sb) return sb - sa
+        return new Date(a.rawDate) - new Date(b.rawDate)
+      })
+      .slice(0, 60)
 
     console.log(`[matches/live-all] ${liveEvents.length} live events`)
     res.json({ data: liveEvents })
