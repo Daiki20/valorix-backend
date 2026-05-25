@@ -248,7 +248,7 @@ function getLeagueScore(sport, leagueName) {
     if (/млс|mls|лига мекс|liga mx/.test(l))                             return 600
     if (/бундеслига 2|серия б|лига 2|чемпионшип/.test(l))               return 400
     if (/третья|3.* дивизион|третий/.test(l))                            return 200
-    return 500
+    return 50   // unknown league — no data in sstats.net, will be filtered out
   }
 
   if (sport === 'hockey') {
@@ -317,7 +317,12 @@ function hasDataCoverage(sport, leagueName) {
     return true
   }
 
-  // Football: sstats.net covers all top leagues we already score highly
+  // Football: only show leagues explicitly known to sstats.net (score > 50)
+  // Score 50 = catch-all unknown leagues (Bolivia, etc.) — no data there
+  if (sport === 'football') {
+    return getLeagueScore('football', leagueName) > 50
+  }
+
   // Esports: AllSports covers major tournaments
   return true
 }
