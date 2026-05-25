@@ -182,6 +182,18 @@ router.get('/basketball-fonbet', async (req, res) => {
   }
 })
 
+// GET /matches/hockey-fonbet — Fonbet hockey (КХЛ, НХЛ, ВХЛ, МХЛ, ЧМ, etc.)
+router.get('/hockey-fonbet', async (req, res) => {
+  try {
+    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.hockey, 100)
+    console.log(`[matches/hockey-fonbet] Fonbet: ${games.length} games`)
+    res.json({ data: games })
+  } catch (err) {
+    console.error('[matches/hockey-fonbet]', err.message)
+    res.json({ data: [] })
+  }
+})
+
 // GET /matches/fonbet-cache-reset — clear Fonbet cache
 router.get('/fonbet-cache-reset', (req, res) => {
   fonbetCache = { data: null, tree: null, leagueNames: null, oddsMap: null, ts: 0 }
