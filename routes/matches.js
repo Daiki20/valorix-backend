@@ -23,23 +23,71 @@ const FONBET_TTL = 2 * 60 * 1000   // 2 min cache
 
 let fonbetCache = { data: null, tree: null, leagueNames: null, oddsMap: null, ts: 0 }
 
-// ── Team logo lookup via Sofascore (free, no key) ─────────────────────────────
-const _teamImgCache = new Map()   // name (lower) → { url, ts }
-const TEAM_IMG_TTL = 24 * 60 * 60 * 1000   // 24h
+// ── Team logo lookup ──────────────────────────────────────────────────────────
+// Strategy:
+//   1. NBA teams → ESPN CDN (instant, no API, 100% reliable)
+//   2. All others → Sofascore search API (free, runs in BACKGROUND — non-blocking)
+//   3. Errors cached for only 5 min (retry sooner than 24h)
 
+const _teamImgCache = new Map()   // name.lower → { url, ts, ok }
+const TEAM_IMG_HIT_TTL  = 24 * 60 * 60 * 1000   // 24h for found logos
+const TEAM_IMG_MISS_TTL =  5 * 60 * 1000          //  5m for "not found" (retry sooner)
+
+// NBA Russian names → ESPN CDN abbreviation (instant, no API call)
+const NBA_ESPN = {
+  'атланта': 'atl', 'хоукс': 'atl',
+  'бостон': 'bos', 'селтикс': 'bos',
+  'бруклин': 'bkn', 'нетс': 'bkn',
+  'шарлотт': 'cha', 'хорнетс': 'cha',
+  'чикаго': 'chi', 'буллс': 'chi',
+  'кливленд': 'cle', 'кавальерс': 'cle', 'кавс': 'cle',
+  'даллас': 'dal', 'маверикс': 'dal',
+  'денвер': 'den', 'наггетс': 'den',
+  'детройт': 'det', 'пистонс': 'det',
+  'голден стейт': 'gs', 'уорриорс': 'gs',
+  'хьюстон': 'hou', 'рокетс': 'hou',
+  'индиана': 'ind', 'пейсерс': 'ind',
+  'лос-анджелес клипперс': 'lac', 'клипперс': 'lac',
+  'лос-анджелес лейкерс': 'lal', 'лейкерс': 'lal',
+  'мемфис': 'mem', 'гриззлис': 'mem',
+  'майами': 'mia', 'хит': 'mia',
+  'милуоки': 'mil', 'бакс': 'mil',
+  'миннесота': 'min', 'тимбервулвс': 'min',
+  'нью-орлеан': 'no', 'пеликанс': 'no',
+  'нью-йорк': 'ny', 'никс': 'ny',
+  'оклахома': 'okc', 'тандер': 'okc',
+  'орландо': 'orl', 'мэджик': 'orl',
+  'филадельфия': 'phi', '76ers': 'phi',
+  'финикс': 'phx', 'санс': 'phx',
+  'портленд': 'por', 'блейзерс': 'por',
+  'сакраменто': 'sac', 'кингс': 'sac',
+  'сан-антонио': 'sa', 'спёрс': 'sa', 'спурс': 'sa',
+  'торонто': 'tor', 'рэпторс': 'tor',
+  'юта': 'utah', 'джаз': 'utah',
+  'вашингтон': 'wsh', 'уизардс': 'wsh',
+}
+
+function getNBALogo(name) {
+  const key = (name || '').toLowerCase().trim()
+  const abbr = NBA_ESPN[key] || NBA_ESPN[key.split(/[\s-]/)[0]]
+  return abbr ? `https://a.espncdn.com/i/teamlogos/nba/500/${abbr}.png` : null
+}
+
+// Sofascore search (free, no key) — returns Sofascore team image CDN URL
 function sofascoreSearchTeam(name) {
   return new Promise((resolve) => {
-    const q = encodeURIComponent(name)
     const options = {
       hostname: 'api.sofascore.com',
-      path: `/api/v1/search?q=${q}`,
+      path: `/api/v1/search?q=${encodeURIComponent(name)}`,
       method: 'GET',
-      timeout: 5000,
+      timeout: 6000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
-        'Accept': 'application/json',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8',
         'Referer': 'https://www.sofascore.com/',
         'Origin': 'https://www.sofascore.com',
+        'Cache-Control': 'no-cache',
       },
     }
     const req = https.request(options, res => {
@@ -57,41 +105,57 @@ function sofascoreSearchTeam(name) {
   })
 }
 
-async function lookupTeamImg(name) {
+// Lookup logo for ONE team name — NBA instant, others via Sofascore
+async function lookupTeamImg(name, isNBA = false) {
   if (!name) return null
   const key = name.toLowerCase().trim()
   const cached = _teamImgCache.get(key)
-  if (cached && Date.now() - cached.ts < TEAM_IMG_TTL) return cached.url
+  const ttl = cached?.ok ? TEAM_IMG_HIT_TTL : TEAM_IMG_MISS_TTL
+  if (cached && Date.now() - cached.ts < ttl) return cached.url
 
+  // NBA: use ESPN CDN instantly
+  if (isNBA) {
+    const url = getNBALogo(name)
+    _teamImgCache.set(key, { url, ts: Date.now(), ok: !!url })
+    return url
+  }
+
+  // Others: Sofascore search
   try {
     const data = await sofascoreSearchTeam(name)
-    // Sofascore /search returns { teams: [...], uniqueTournaments: [...], ... }
     const teams = data?.teams || []
-    if (!teams.length) { _teamImgCache.set(key, { url: null, ts: Date.now() }); return null }
-    // Take first result that has an ID
+    if (!teams.length) { _teamImgCache.set(key, { url: null, ts: Date.now(), ok: false }); return null }
     const team = teams.find(t => t.id) || teams[0]
-    if (!team?.id) { _teamImgCache.set(key, { url: null, ts: Date.now() }); return null }
-    // Use our own proxy endpoint so frontend doesn't hit Sofascore CORS
+    if (!team?.id) { _teamImgCache.set(key, { url: null, ts: Date.now(), ok: false }); return null }
     const url = `/matches/team-img/${team.id}`
-    _teamImgCache.set(key, { url, ts: Date.now() })
+    _teamImgCache.set(key, { url, ts: Date.now(), ok: true })
     return url
   } catch {
-    _teamImgCache.set(key, { url: null, ts: Date.now() })
+    _teamImgCache.set(key, { url: null, ts: Date.now(), ok: false })
     return null
   }
 }
 
-// Batch lookup logos for a list of team names (max 5 concurrent to avoid rate limiting)
-async function batchLookupLogos(names) {
-  const result = {}
-  const unique = [...new Set(names.filter(Boolean))]
-  const CONCURRENCY = 5
-  for (let i = 0; i < unique.length; i += CONCURRENCY) {
-    const batch = unique.slice(i, i + CONCURRENCY)
-    const urls = await Promise.all(batch.map(lookupTeamImg))
-    batch.forEach((name, idx) => { result[name] = urls[idx] })
-  }
-  return result
+// Warm logo cache for a list of team names — NON-BLOCKING (fire and forget)
+// isNBA flag to use ESPN CDN for basketball teams
+function warmLogoCache(names, isNBA = false) {
+  const unique = [...new Set((names || []).filter(Boolean))]
+  const uncached = unique.filter(n => {
+    const key = n.toLowerCase().trim()
+    const c = _teamImgCache.get(key)
+    if (!c) return true
+    const ttl = c.ok ? TEAM_IMG_HIT_TTL : TEAM_IMG_MISS_TTL
+    return Date.now() - c.ts >= ttl
+  })
+  if (!uncached.length) return
+  // Process in batches of 3 with small delay to avoid rate limiting
+  ;(async () => {
+    for (let i = 0; i < uncached.length; i += 3) {
+      const batch = uncached.slice(i, i + 3)
+      await Promise.all(batch.map(n => lookupTeamImg(n, isNBA).catch(() => null)))
+      if (i + 3 < uncached.length) await new Promise(r => setTimeout(r, 200))
+    }
+  })().catch(() => {})  // swallow all errors — this is background work
 }
 
 function fonbetFetch() {
@@ -275,24 +339,27 @@ async function getFonbetSportEvents(rootSportId, limit = 20) {
     })
     .slice(0, limit)
 
-  // ── Enrich with team logos (Sofascore, cached 24h) ───────────────────────────
-  // Only look up teams that are NOT already in cache to minimise requests
-  const uncachedNames = []
-  for (const ev of events) {
-    const hKey = (ev.home || '').toLowerCase().trim()
-    const aKey = (ev.away || '').toLowerCase().trim()
-    if (!_teamImgCache.has(hKey)) uncachedNames.push(ev.home)
-    if (!_teamImgCache.has(aKey)) uncachedNames.push(ev.away)
-  }
-  if (uncachedNames.length > 0) {
-    await batchLookupLogos(uncachedNames)  // populates _teamImgCache in background
-  }
-  // Attach cached logos to events
-  for (const ev of events) {
-    const hKey = (ev.home || '').toLowerCase().trim()
-    const aKey = (ev.away || '').toLowerCase().trim()
-    ev.homeImg = _teamImgCache.get(hKey)?.url || null
-    ev.awayImg = _teamImgCache.get(aKey)?.url || null
+  // ── Enrich with logos ────────────────────────────────────────────────────────
+  const isNBA = rootSportId === FONBET_SPORT_IDS.basketball
+  const allTeamNames = events.flatMap(ev => [ev.home, ev.away])
+
+  // For NBA: logos are instant (ESPN CDN map) — attach synchronously
+  if (isNBA) {
+    for (const ev of events) {
+      ev.homeImg = getNBALogo(ev.home) || null
+      ev.awayImg = getNBALogo(ev.away) || null
+    }
+  } else {
+    // For non-NBA: attach already-cached logos, warm cache in background for the rest
+    for (const ev of events) {
+      const hEntry = _teamImgCache.get((ev.home || '').toLowerCase().trim())
+      const aEntry = _teamImgCache.get((ev.away || '').toLowerCase().trim())
+      const now = Date.now()
+      ev.homeImg = (hEntry?.ok && now - hEntry.ts < TEAM_IMG_HIT_TTL) ? hEntry.url : null
+      ev.awayImg = (aEntry?.ok && now - aEntry.ts < TEAM_IMG_HIT_TTL) ? aEntry.url : null
+    }
+    // Start background warm-up (non-blocking, won't delay response)
+    warmLogoCache(allTeamNames, false)
   }
 
   return events
@@ -391,17 +458,22 @@ router.get('/live-all', async (req, res) => {
       })
       .slice(0, 60)
 
-    // Enrich with team logos
-    const uncached = []
+    // Enrich with logos (NBA instant, others from cache + background warm)
+    const now = Date.now()
     for (const ev of liveEvents) {
-      if (!_teamImgCache.has((ev.home || '').toLowerCase().trim())) uncached.push(ev.home)
-      if (!_teamImgCache.has((ev.away || '').toLowerCase().trim())) uncached.push(ev.away)
+      if (ev.sport === 'basketball') {
+        ev.homeImg = getNBALogo(ev.home) || null
+        ev.awayImg = getNBALogo(ev.away) || null
+      } else {
+        const hEntry = _teamImgCache.get((ev.home || '').toLowerCase().trim())
+        const aEntry = _teamImgCache.get((ev.away || '').toLowerCase().trim())
+        ev.homeImg = (hEntry?.ok && now - hEntry.ts < TEAM_IMG_HIT_TTL) ? hEntry.url : null
+        ev.awayImg = (aEntry?.ok && now - aEntry.ts < TEAM_IMG_HIT_TTL) ? aEntry.url : null
+      }
     }
-    if (uncached.length > 0) await batchLookupLogos(uncached)
-    for (const ev of liveEvents) {
-      ev.homeImg = _teamImgCache.get((ev.home || '').toLowerCase().trim())?.url || null
-      ev.awayImg = _teamImgCache.get((ev.away || '').toLowerCase().trim())?.url || null
-    }
+    // Background logo warm-up for non-basketball teams
+    const nonNBANames = liveEvents.filter(e => e.sport !== 'basketball').flatMap(e => [e.home, e.away])
+    warmLogoCache(nonNBANames, false)
 
     console.log(`[matches/live-all] ${liveEvents.length} live events`)
     res.json({ data: liveEvents })
