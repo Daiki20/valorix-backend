@@ -23,6 +23,77 @@ const FONBET_TTL = 2 * 60 * 1000   // 2 min cache
 
 let fonbetCache = { data: null, tree: null, leagueNames: null, oddsMap: null, ts: 0 }
 
+// ── Team logo lookup via Sofascore (free, no key) ─────────────────────────────
+const _teamImgCache = new Map()   // name (lower) → { url, ts }
+const TEAM_IMG_TTL = 24 * 60 * 60 * 1000   // 24h
+
+function sofascoreSearchTeam(name) {
+  return new Promise((resolve) => {
+    const q = encodeURIComponent(name)
+    const options = {
+      hostname: 'api.sofascore.com',
+      path: `/api/v1/search?q=${q}`,
+      method: 'GET',
+      timeout: 5000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Referer': 'https://www.sofascore.com/',
+        'Origin': 'https://www.sofascore.com',
+      },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => {
+        if (res.statusCode !== 200) { resolve(null); return }
+        try { resolve(JSON.parse(data)) }
+        catch { resolve(null) }
+      })
+    })
+    req.on('error', () => resolve(null))
+    req.on('timeout', () => { req.destroy(); resolve(null) })
+    req.end()
+  })
+}
+
+async function lookupTeamImg(name) {
+  if (!name) return null
+  const key = name.toLowerCase().trim()
+  const cached = _teamImgCache.get(key)
+  if (cached && Date.now() - cached.ts < TEAM_IMG_TTL) return cached.url
+
+  try {
+    const data = await sofascoreSearchTeam(name)
+    // Sofascore /search returns { teams: [...], uniqueTournaments: [...], ... }
+    const teams = data?.teams || []
+    if (!teams.length) { _teamImgCache.set(key, { url: null, ts: Date.now() }); return null }
+    // Take first result that has an ID
+    const team = teams.find(t => t.id) || teams[0]
+    if (!team?.id) { _teamImgCache.set(key, { url: null, ts: Date.now() }); return null }
+    // Use our own proxy endpoint so frontend doesn't hit Sofascore CORS
+    const url = `/matches/team-img/${team.id}`
+    _teamImgCache.set(key, { url, ts: Date.now() })
+    return url
+  } catch {
+    _teamImgCache.set(key, { url: null, ts: Date.now() })
+    return null
+  }
+}
+
+// Batch lookup logos for a list of team names (max 5 concurrent to avoid rate limiting)
+async function batchLookupLogos(names) {
+  const result = {}
+  const unique = [...new Set(names.filter(Boolean))]
+  const CONCURRENCY = 5
+  for (let i = 0; i < unique.length; i += CONCURRENCY) {
+    const batch = unique.slice(i, i + CONCURRENCY)
+    const urls = await Promise.all(batch.map(lookupTeamImg))
+    batch.forEach((name, idx) => { result[name] = urls[idx] })
+  }
+  return result
+}
+
 function fonbetFetch() {
   return new Promise((resolve, reject) => {
     const options = {
@@ -175,7 +246,7 @@ function fonbetFormatDate(startTime) {
   } catch { return '' }
 }
 
-async function getFonbetSportEvents(rootSportId, limit = 80) {
+async function getFonbetSportEvents(rootSportId, limit = 20) {
   const { data, tree, leagueNames, oddsMap } = await getFonbetData()
   const sportName = Object.keys(FONBET_SPORT_IDS).find(k => FONBET_SPORT_IDS[k] === rootSportId) || 'other'
 
@@ -203,6 +274,26 @@ async function getFonbetSportEvents(rootSportId, limit = 80) {
       return new Date(a.rawDate) - new Date(b.rawDate)
     })
     .slice(0, limit)
+
+  // ── Enrich with team logos (Sofascore, cached 24h) ───────────────────────────
+  // Only look up teams that are NOT already in cache to minimise requests
+  const uncachedNames = []
+  for (const ev of events) {
+    const hKey = (ev.home || '').toLowerCase().trim()
+    const aKey = (ev.away || '').toLowerCase().trim()
+    if (!_teamImgCache.has(hKey)) uncachedNames.push(ev.home)
+    if (!_teamImgCache.has(aKey)) uncachedNames.push(ev.away)
+  }
+  if (uncachedNames.length > 0) {
+    await batchLookupLogos(uncachedNames)  // populates _teamImgCache in background
+  }
+  // Attach cached logos to events
+  for (const ev of events) {
+    const hKey = (ev.home || '').toLowerCase().trim()
+    const aKey = (ev.away || '').toLowerCase().trim()
+    ev.homeImg = _teamImgCache.get(hKey)?.url || null
+    ev.awayImg = _teamImgCache.get(aKey)?.url || null
+  }
 
   return events
 }
@@ -300,6 +391,18 @@ router.get('/live-all', async (req, res) => {
       })
       .slice(0, 60)
 
+    // Enrich with team logos
+    const uncached = []
+    for (const ev of liveEvents) {
+      if (!_teamImgCache.has((ev.home || '').toLowerCase().trim())) uncached.push(ev.home)
+      if (!_teamImgCache.has((ev.away || '').toLowerCase().trim())) uncached.push(ev.away)
+    }
+    if (uncached.length > 0) await batchLookupLogos(uncached)
+    for (const ev of liveEvents) {
+      ev.homeImg = _teamImgCache.get((ev.home || '').toLowerCase().trim())?.url || null
+      ev.awayImg = _teamImgCache.get((ev.away || '').toLowerCase().trim())?.url || null
+    }
+
     console.log(`[matches/live-all] ${liveEvents.length} live events`)
     res.json({ data: liveEvents })
   } catch (err) {
@@ -308,36 +411,46 @@ router.get('/live-all', async (req, res) => {
   }
 })
 
-// GET /matches/team-logo?name=Arsenal — logo via TheSportsDB (cached 24h)
-const _teamLogoCache = new Map()
-const TEAM_LOGO_TTL = 24 * 60 * 60 * 1000
-
+// GET /matches/team-logo?name=Arsenal — logo via Sofascore search (free, cached 24h)
 router.get('/team-logo', async (req, res) => {
   const name = (req.query.name || '').trim()
   if (!name) return res.json({ url: null })
+  const url = await lookupTeamImg(name)
+  return res.json({ url })
+})
 
-  const key = name.toLowerCase()
-  const cached = _teamLogoCache.get(key)
-  if (cached && Date.now() - cached.ts < TEAM_LOGO_TTL) {
-    return res.json({ url: cached.url })
-  }
+// GET /matches/team-img/:teamId — proxy Sofascore team image (avoids CORS)
+router.get('/team-img/:teamId', (req, res) => {
+  const teamId = Number(req.params.teamId)
+  if (!teamId) return res.status(400).end()
 
-  try {
-    const data = await httpsGetJson('www.thesportsdb.com', `/api/v1/json/3/searchteams.php?t=${encodeURIComponent(name)}`)
-    const team = data?.teams?.[0]
-    const url = team?.strTeamBadge || team?.strBadge || null
-    _teamLogoCache.set(key, { url, ts: Date.now() })
-    return res.json({ url })
-  } catch (err) {
-    _teamLogoCache.set(key, { url: null, ts: Date.now() })
-    return res.json({ url: null })
+  const options = {
+    hostname: 'api.sofascore.com',
+    path: `/api/v1/team/${teamId}/image`,
+    method: 'GET',
+    timeout: 6000,
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Referer': 'https://www.sofascore.com/',
+      'Origin': 'https://www.sofascore.com',
+    },
   }
+  const proxyReq = https.request(options, proxyRes => {
+    if (proxyRes.statusCode !== 200) { res.status(404).end(); return }
+    res.setHeader('Content-Type', proxyRes.headers['content-type'] || 'image/png')
+    res.setHeader('Cache-Control', 'public, max-age=86400')
+    proxyRes.pipe(res)
+  })
+  proxyReq.on('error', () => res.status(502).end())
+  proxyReq.on('timeout', () => { proxyReq.destroy(); res.status(504).end() })
+  proxyReq.end()
 })
 
 // GET /matches/fonbet-cache-reset — clear Fonbet cache
 router.get('/fonbet-cache-reset', (req, res) => {
   fonbetCache = { data: null, tree: null, leagueNames: null, oddsMap: null, ts: 0 }
-  res.json({ ok: true, message: 'Fonbet cache cleared' })
+  _teamImgCache.clear()
+  res.json({ ok: true, message: 'Fonbet + logo cache cleared' })
 })
 
 function sstatsGet(path, params = {}) {
