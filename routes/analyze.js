@@ -368,7 +368,7 @@ function ballDontLieGet(path, params = {}) {
     const qs = parts.join('&')
     const options = {
       hostname: 'api.balldontlie.io',
-      path: `/v2${path}${qs ? '?' + qs : ''}`,
+      path: `${path}${qs ? '?' + qs : ''}`,
       method: 'GET',
       headers: { 'Authorization': process.env.BALLDONTLIE_KEY, 'Content-Type': 'application/json' },
     }
@@ -423,8 +423,8 @@ router.post('/basketball-form', authenticate, async (req, res) => {
     const nbaSeason = (now.getMonth() + 1) >= 10 ? now.getFullYear() : now.getFullYear() - 1
 
     const [homeRes, awayRes] = await Promise.all([
-      ballDontLieGet('/nba/teams', { search: homeTeam }),
-      ballDontLieGet('/nba/teams', { search: awayTeam }),
+      ballDontLieGet('/v1/teams', { search: homeTeam }),
+      ballDontLieGet('/v1/teams', { search: awayTeam }),
     ])
     const homeData = homeRes.data?.[0]
     const awayData = awayRes.data?.[0]
@@ -433,9 +433,9 @@ router.post('/basketball-form', authenticate, async (req, res) => {
     const homeId = homeData.id, awayId = awayData.id
 
     const [homeGamesRes, awayGamesRes, standingsRes] = await Promise.allSettled([
-      ballDontLieGet('/nba/games', { team_ids: [homeId], seasons: [nbaSeason], per_page: 25 }),
-      ballDontLieGet('/nba/games', { team_ids: [awayId], seasons: [nbaSeason], per_page: 25 }),
-      ballDontLieGet('/nba/standings', { season: nbaSeason }),
+      ballDontLieGet('/v1/games', { team_ids: [homeId], seasons: [nbaSeason], per_page: 25 }),
+      ballDontLieGet('/v1/games', { team_ids: [awayId], seasons: [nbaSeason], per_page: 25 }),
+      ballDontLieGet('/v1/standings', { season: nbaSeason }),
     ])
 
     const homeGames  = homeGamesRes.status  === 'fulfilled' ? homeGamesRes.value?.data  || [] : []
@@ -633,8 +633,8 @@ function computeBDLTeamForm(games, teamId) {
 async function getBDLTeamForm(prefix, homeTeam, awayTeam) {
   const season = getBDLSeason(prefix)
   const [homeRes, awayRes] = await Promise.all([
-    ballDontLieGet(`/${prefix}/teams`, { search: homeTeam }),
-    ballDontLieGet(`/${prefix}/teams`, { search: awayTeam }),
+    ballDontLieGet(`/${prefix}/v1/teams`, { search: homeTeam }),
+    ballDontLieGet(`/${prefix}/v1/teams`, { search: awayTeam }),
   ])
   const homeData = homeRes?.data?.[0]
   const awayData = awayRes?.data?.[0]
@@ -644,9 +644,9 @@ async function getBDLTeamForm(prefix, homeTeam, awayTeam) {
   const teamName = t => t.full_name || t.name || String(t.id)
 
   const [homeGamesRes, awayGamesRes, standingsRes] = await Promise.allSettled([
-    ballDontLieGet(`/${prefix}/games`, { team_ids: [homeId], seasons: [season], per_page: 25 }),
-    ballDontLieGet(`/${prefix}/games`, { team_ids: [awayId], seasons: [season], per_page: 25 }),
-    ballDontLieGet(`/${prefix}/standings`, { season }).catch(() => ({ data: [] })),
+    ballDontLieGet(`/${prefix}/v1/games`, { team_ids: [homeId], seasons: [season], per_page: 25 }),
+    ballDontLieGet(`/${prefix}/v1/games`, { team_ids: [awayId], seasons: [season], per_page: 25 }),
+    ballDontLieGet(`/${prefix}/v1/standings`, { season }).catch(() => ({ data: [] })),
   ])
 
   const homeGames  = homeGamesRes.status  === 'fulfilled' ? homeGamesRes.value?.data  || [] : []
@@ -693,8 +693,8 @@ async function getBDLPlayerForm(prefix, player1, player2) {
   const matchEndpoint  = prefix === 'mma' ? 'bouts'    : 'matches'
 
   const [p1Res, p2Res] = await Promise.all([
-    ballDontLieGet(`/${prefix}/${playerEndpoint}`, { search: player1, per_page: 5 }),
-    ballDontLieGet(`/${prefix}/${playerEndpoint}`, { search: player2, per_page: 5 }),
+    ballDontLieGet(`/${prefix}/v1/${playerEndpoint}`, { search: player1, per_page: 5 }),
+    ballDontLieGet(`/${prefix}/v1/${playerEndpoint}`, { search: player2, per_page: 5 }),
   ])
   const p1 = p1Res?.data?.[0], p2 = p2Res?.data?.[0]
   if (!p1 || !p2) return { error: 'players not found', player1, player2 }
@@ -702,8 +702,8 @@ async function getBDLPlayerForm(prefix, player1, player2) {
   const pName = p => p.name || `${p.first_name || ''} ${p.last_name || ''}`.trim() || String(p.id)
 
   const [p1MatchesRes, p2MatchesRes] = await Promise.allSettled([
-    ballDontLieGet(`/${prefix}/${matchEndpoint}`, { player_ids: [p1.id], seasons: [year], per_page: 20 }),
-    ballDontLieGet(`/${prefix}/${matchEndpoint}`, { player_ids: [p2.id], seasons: [year], per_page: 20 }),
+    ballDontLieGet(`/${prefix}/v1/${matchEndpoint}`, { player_ids: [p1.id], seasons: [year], per_page: 20 }),
+    ballDontLieGet(`/${prefix}/v1/${matchEndpoint}`, { player_ids: [p2.id], seasons: [year], per_page: 20 }),
   ])
   const p1Matches = p1MatchesRes.status === 'fulfilled' ? p1MatchesRes.value?.data || [] : []
   const p2Matches = p2MatchesRes.status === 'fulfilled' ? p2MatchesRes.value?.data || [] : []
