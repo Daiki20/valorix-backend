@@ -293,6 +293,33 @@ function getLeagueScore(sport, leagueName) {
   return 500
 }
 
+// ── League data coverage filter ───────────────────────────────────────────────
+// Returns false for leagues where we have NO statistical data → these matches
+// are hidden so AI cannot hallucinate made-up stats for them.
+function hasDataCoverage(sport, leagueName) {
+  const l = (leagueName || '').toLowerCase()
+
+  if (sport === 'basketball') {
+    // BallDontLie only has NBA — remove WNBA, Euroleague, VTB, EuroCup, etc.
+    return /нба|nba/.test(l)
+  }
+
+  if (sport === 'hockey') {
+    // Keep NHL (BallDontLie) and KHL (AllSports has decent data)
+    return /нхл|nhl|кхл/.test(l)
+  }
+
+  if (sport === 'tennis') {
+    // Remove WTA / women's tours — BallDontLie only has ATP players
+    if (/\(ж\)|wta|женщ|women|female/.test(l)) return false
+    return true
+  }
+
+  // Football: sstats.net covers all top leagues we already score highly
+  // Esports: AllSports covers major tournaments
+  return true
+}
+
 function detectEsportType(leagueName) {
   const l = (leagueName || '').toLowerCase()
   if (l.includes('cs2') || l.includes('counter-strike')) return 'cs2'
@@ -331,6 +358,7 @@ async function getFonbetSportEvents(rootSportId, limit = 20) {
       }
     })
     .filter(e => e.odds1x2)
+    .filter(e => hasDataCoverage(e.sport, e.league))
     .sort((a, b) => {
       const sa = getLeagueScore(a.sport, a.league)
       const sb = getLeagueScore(b.sport, b.league)
@@ -450,6 +478,7 @@ router.get('/live-all', async (req, res) => {
           odds1x2: oddsMap[e.id] || null,
         }
       })
+      .filter(e => hasDataCoverage(e.sport, e.league))
       .sort((a, b) => {
         const sa = getLeagueScore(a.sport, a.league)
         const sb = getLeagueScore(b.sport, b.league)
