@@ -301,6 +301,8 @@ function hasDataCoverage(sport, leagueName) {
 
   if (sport === 'basketball') {
     // BallDontLie only has NBA — remove WNBA, Euroleague, VTB, EuroCup, etc.
+    // Important: exclude WNBA first — "wnba" contains "nba" so must check before NBA match
+    if (/wnba|внба|\(ж\)|женщ/i.test(l)) return false
     return /нба|nba/.test(l)
   }
 
