@@ -77,7 +77,7 @@ const analysisLimiter = rateLimit({
 // Общий лимит на все API
 const globalLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 120,
+  max: 300,
   message: { error: 'Слишком много запросов.' },
   standardHeaders: true,
   legacyHeaders: false,
