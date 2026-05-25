@@ -194,6 +194,66 @@ router.get('/hockey-fonbet', async (req, res) => {
   }
 })
 
+// GET /matches/live-all — all Fonbet live matches across all sports
+router.get('/live-all', async (req, res) => {
+  try {
+    const { data, tree, leagueNames, oddsMap } = await getFonbetData()
+    const KNOWN_ROOT_IDS = new Set(Object.values(FONBET_SPORT_IDS))
+    const sportKeyMap = Object.fromEntries(Object.entries(FONBET_SPORT_IDS).map(([k, v]) => [v, k]))
+
+    const liveEvents = (data.events || [])
+      .filter(e => e.level === 1 && e.team1 && e.team2 && e.place === 'live')
+      .filter(e => KNOWN_ROOT_IDS.has(tree[e.sportId]))
+      .map(e => {
+        const rootId = tree[e.sportId]
+        const league = leagueNames[e.sportId] || ''
+        const sport = rootId === FONBET_SPORT_IDS.esports ? detectEsportType(league) : (sportKeyMap[rootId] || 'other')
+        return {
+          id: `fonbet_live_${e.id}`,
+          fonbetId: e.id,
+          home: e.team1, away: e.team2,
+          league, sport,
+          date: fonbetFormatDate(e.startTime),
+          rawDate: new Date(e.startTime * 1000).toISOString(),
+          isLive: true,
+          odds1x2: oddsMap[e.id] || null,
+        }
+      })
+
+    console.log(`[matches/live-all] ${liveEvents.length} live events`)
+    res.json({ data: liveEvents })
+  } catch (err) {
+    console.error('[matches/live-all]', err.message)
+    res.json({ data: [] })
+  }
+})
+
+// GET /matches/team-logo?name=Arsenal — logo via TheSportsDB (cached 24h)
+const _teamLogoCache = new Map()
+const TEAM_LOGO_TTL = 24 * 60 * 60 * 1000
+
+router.get('/team-logo', async (req, res) => {
+  const name = (req.query.name || '').trim()
+  if (!name) return res.json({ url: null })
+
+  const key = name.toLowerCase()
+  const cached = _teamLogoCache.get(key)
+  if (cached && Date.now() - cached.ts < TEAM_LOGO_TTL) {
+    return res.json({ url: cached.url })
+  }
+
+  try {
+    const data = await httpsGetJson('www.thesportsdb.com', `/api/v1/json/3/searchteams.php?t=${encodeURIComponent(name)}`)
+    const team = data?.teams?.[0]
+    const url = team?.strTeamBadge || team?.strBadge || null
+    _teamLogoCache.set(key, { url, ts: Date.now() })
+    return res.json({ url })
+  } catch (err) {
+    _teamLogoCache.set(key, { url: null, ts: Date.now() })
+    return res.json({ url: null })
+  }
+})
+
 // GET /matches/fonbet-cache-reset — clear Fonbet cache
 router.get('/fonbet-cache-reset', (req, res) => {
   fonbetCache = { data: null, tree: null, leagueNames: null, oddsMap: null, ts: 0 }
