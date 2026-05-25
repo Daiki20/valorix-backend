@@ -129,6 +129,16 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_analysis_cache_created ON analysis_cache(created_at);
 `)
 
+// Team logo cache (persists across Railway restarts)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS team_logos (
+    name_key  TEXT PRIMARY KEY,
+    url       TEXT,
+    ok        INTEGER NOT NULL DEFAULT 0,
+    ts        INTEGER NOT NULL
+  );
+`)
+
 // Seed super-admin
 db.prepare(`
   UPDATE users SET is_admin = 1 WHERE email = 'andrey.pishev2021@yandex.ru'

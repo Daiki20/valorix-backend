@@ -2,6 +2,7 @@ const express = require('express')
 const https = require('https')
 const zlib = require('zlib')
 const router = express.Router()
+const db = require('../db')
 
 const SSTATS_BASE = 'https://api.sstats.net'
 
@@ -27,11 +28,44 @@ let fonbetCache = { data: null, tree: null, leagueNames: null, oddsMap: null, ts
 // Strategy:
 //   1. NBA teams → ESPN CDN (instant, no API, 100% reliable)
 //   2. All others → Sofascore search API (free, runs in BACKGROUND — non-blocking)
-//   3. Errors cached for only 5 min (retry sooner than 24h)
+//   3. Results stored in SQLite (team_logos table) — survive Railway restarts
+//   4. In-memory Map is a fast L1 cache on top of SQLite
 
-const _teamImgCache = new Map()   // name.lower → { url, ts, ok }
-const TEAM_IMG_HIT_TTL  = 24 * 60 * 60 * 1000   // 24h for found logos
-const TEAM_IMG_MISS_TTL =  5 * 60 * 1000          //  5m for "not found" (retry sooner)
+const _teamImgCache = new Map()   // name.lower → { url, ts, ok }  (L1 — memory)
+const TEAM_IMG_HIT_TTL  = 7 * 24 * 60 * 60 * 1000   // 7 days for found logos
+const TEAM_IMG_MISS_TTL =  30 * 60 * 1000             // 30 min for "not found" (retry)
+
+// Prepared statements for logo persistence
+const _logoGet  = db.prepare('SELECT url, ok, ts FROM team_logos WHERE name_key = ?')
+const _logoUpsert = db.prepare(`
+  INSERT INTO team_logos (name_key, url, ok, ts) VALUES (?, ?, ?, ?)
+  ON CONFLICT(name_key) DO UPDATE SET url=excluded.url, ok=excluded.ok, ts=excluded.ts
+`)
+
+// On startup: load all valid logos from SQLite into memory (warm L1 instantly)
+;(function loadLogosFromDB() {
+  try {
+    const rows = db.prepare('SELECT name_key, url, ok, ts FROM team_logos').all()
+    let loaded = 0
+    for (const row of rows) {
+      const ttl = row.ok ? TEAM_IMG_HIT_TTL : TEAM_IMG_MISS_TTL
+      if (Date.now() - row.ts < ttl) {
+        _teamImgCache.set(row.name_key, { url: row.url || null, ts: row.ts, ok: !!row.ok })
+        loaded++
+      }
+    }
+    if (loaded > 0) console.log(`[logos] loaded ${loaded} team logos from SQLite`)
+  } catch (e) {
+    console.warn('[logos] failed to load from SQLite:', e.message)
+  }
+})()
+
+// Write logo entry to both memory and SQLite
+function _setLogoCache(key, url, ok) {
+  const ts = Date.now()
+  _teamImgCache.set(key, { url, ts, ok })
+  try { _logoUpsert.run(key, url || null, ok ? 1 : 0, ts) } catch { /* non-critical */ }
+}
 
 // NBA Russian names → ESPN CDN abbreviation (instant, no API call)
 const NBA_ESPN = {
@@ -109,14 +143,30 @@ function sofascoreSearchTeam(name) {
 async function lookupTeamImg(name, isNBA = false) {
   if (!name) return null
   const key = name.toLowerCase().trim()
+
+  // L1: memory cache
   const cached = _teamImgCache.get(key)
   const ttl = cached?.ok ? TEAM_IMG_HIT_TTL : TEAM_IMG_MISS_TTL
   if (cached && Date.now() - cached.ts < ttl) return cached.url
 
-  // NBA: use ESPN CDN instantly
+  // L2: SQLite (in case memory was cleared but DB has it)
+  if (!cached) {
+    try {
+      const row = _logoGet.get(key)
+      if (row) {
+        const rowTtl = row.ok ? TEAM_IMG_HIT_TTL : TEAM_IMG_MISS_TTL
+        if (Date.now() - row.ts < rowTtl) {
+          _teamImgCache.set(key, { url: row.url || null, ts: row.ts, ok: !!row.ok })
+          return row.url || null
+        }
+      }
+    } catch { /* non-critical */ }
+  }
+
+  // NBA: use ESPN CDN instantly (no network call)
   if (isNBA) {
     const url = getNBALogo(name)
-    _teamImgCache.set(key, { url, ts: Date.now(), ok: !!url })
+    _setLogoCache(key, url, !!url)
     return url
   }
 
@@ -124,14 +174,14 @@ async function lookupTeamImg(name, isNBA = false) {
   try {
     const data = await sofascoreSearchTeam(name)
     const teams = data?.teams || []
-    if (!teams.length) { _teamImgCache.set(key, { url: null, ts: Date.now(), ok: false }); return null }
+    if (!teams.length) { _setLogoCache(key, null, false); return null }
     const team = teams.find(t => t.id) || teams[0]
-    if (!team?.id) { _teamImgCache.set(key, { url: null, ts: Date.now(), ok: false }); return null }
+    if (!team?.id) { _setLogoCache(key, null, false); return null }
     const url = `/matches/team-img/${team.id}`
-    _teamImgCache.set(key, { url, ts: Date.now(), ok: true })
+    _setLogoCache(key, url, true)
     return url
   } catch {
-    _teamImgCache.set(key, { url: null, ts: Date.now(), ok: false })
+    _setLogoCache(key, null, false)
     return null
   }
 }
