@@ -11,8 +11,182 @@ let hockeyCache = { data: null, ts: 0 }
 let basketballCache = { data: null, ts: 0 }
 const UPCOMING_TTL = 15 * 60 * 1000
 const LIVE_TTL = 60 * 1000
-const HOCKEY_TTL = 10 * 60 * 1000   // 10 min — frequent refresh during active tournaments
+const HOCKEY_TTL = 10 * 60 * 1000
 const BASKETBALL_TTL = 6 * 60 * 60 * 1000
+
+// ── Fonbet API ────────────────────────────────────────────────────────────────
+// Root sport IDs in Fonbet: Футбол=1, Хоккей=2, Баскетбол=3, Теннис=4, Киберспорт=29086
+const FONBET_SPORT_IDS = { football: 1, hockey: 2, basketball: 3, tennis: 4, esports: 29086 }
+const FONBET_HOST = process.env.FONBET_HOST || 'line51w.bk6bba-resources.com'
+const FONBET_SCOPE = '1600'
+const FONBET_TTL = 2 * 60 * 1000   // 2 min cache
+
+let fonbetCache = { data: null, tree: null, leagueNames: null, oddsMap: null, ts: 0 }
+
+function fonbetFetch() {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: FONBET_HOST,
+      path: `/events/list?lang=ru&scopeMarket=${FONBET_SCOPE}&version=0`,
+      method: 'GET',
+      timeout: 12000,
+      headers: { 'Accept-Encoding': 'gzip', 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0' },
+    }
+    const req = https.request(options, res => {
+      const enc = res.headers['content-encoding']
+      let stream = res
+      if (enc === 'gzip')    stream = res.pipe(zlib.createGunzip())
+      else if (enc === 'deflate') stream = res.pipe(zlib.createInflate())
+      else if (enc === 'br')      stream = res.pipe(zlib.createBrotliDecompress())
+      let data = ''
+      stream.on('data', c => data += c)
+      stream.on('end', () => {
+        try { resolve(JSON.parse(data)) }
+        catch { reject(new Error('Fonbet JSON parse error')) }
+      })
+      stream.on('error', reject)
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('Fonbet timeout')) })
+    req.end()
+  })
+}
+
+function buildFonbetSportTree(sports) {
+  const memo = {}
+  function findRoot(id) {
+    if (memo[id] !== undefined) return memo[id]
+    const s = sports.find(x => x.id === id)
+    if (!s || !s.parentId) { memo[id] = id; return id }
+    const r = findRoot(s.parentId)
+    memo[id] = r; return r
+  }
+  const tree = {}
+  sports.forEach(s => { tree[s.id] = findRoot(s.id) })
+  return tree
+}
+
+async function getFonbetData() {
+  if (fonbetCache.data && Date.now() - fonbetCache.ts < FONBET_TTL) return fonbetCache
+  const data = await fonbetFetch()
+  const tree = buildFonbetSportTree(data.sports || [])
+  const leagueNames = {}
+  ;(data.sports || []).forEach(s => { leagueNames[s.id] = s.name })
+  // f=921=П1, f=922=Ничья, f=923=П2
+  const oddsMap = {}
+  for (const cf of (data.customFactors || [])) {
+    const factors = {}
+    for (const f of (cf.factors || [])) factors[f.f] = f.v
+    if (factors[921] || factors[923]) {
+      oddsMap[cf.e] = { home: factors[921] || null, draw: factors[922] || null, away: factors[923] || null }
+    }
+  }
+  fonbetCache = { data, tree, leagueNames, oddsMap, ts: Date.now() }
+  console.log(`[fonbet] cached ${(data.events||[]).length} events, ${Object.keys(oddsMap).length} with odds`)
+  return fonbetCache
+}
+
+function detectEsportType(leagueName) {
+  const l = (leagueName || '').toLowerCase()
+  if (l.includes('cs2') || l.includes('counter-strike')) return 'cs2'
+  if (l.includes('dota')) return 'dota2'
+  if (l.includes('league of legends') || l.includes(' lol')) return 'lol'
+  if (l.includes('valorant')) return 'valorant'
+  return 'cs2'
+}
+
+function fonbetFormatDate(startTime) {
+  try {
+    const d = new Date(startTime * 1000)
+    return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', timeZone: 'Europe/Moscow' }) +
+      ' · ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' })
+  } catch { return '' }
+}
+
+async function getFonbetSportEvents(rootSportId, limit = 80) {
+  const { data, tree, leagueNames, oddsMap } = await getFonbetData()
+  const sportName = Object.keys(FONBET_SPORT_IDS).find(k => FONBET_SPORT_IDS[k] === rootSportId) || 'other'
+
+  const events = (data.events || [])
+    .filter(e => e.level === 1 && e.team1 && e.team2 && tree[e.sportId] === rootSportId)
+    .map(e => {
+      const league = leagueNames[e.sportId] || ''
+      const sport = rootSportId === 29086 ? detectEsportType(league) : sportName
+      return {
+        id: `fonbet_${e.id}`,
+        fonbetId: e.id,
+        home: e.team1, away: e.team2,
+        league, sport,
+        date: fonbetFormatDate(e.startTime),
+        rawDate: new Date(e.startTime * 1000).toISOString(),
+        isLive: e.place === 'live',
+        odds1x2: oddsMap[e.id] || null,
+      }
+    })
+    .filter(e => e.odds1x2)
+    .sort((a, b) => {
+      if (a.isLive && !b.isLive) return -1
+      if (!a.isLive && b.isLive) return 1
+      return new Date(a.rawDate) - new Date(b.rawDate)
+    })
+    .slice(0, limit)
+
+  return events
+}
+
+// GET /matches/football — Fonbet football (Line + Live with odds)
+router.get('/football', async (req, res) => {
+  try {
+    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.football, 100)
+    console.log(`[matches/football] Fonbet: ${games.length} games`)
+    res.json({ data: games })
+  } catch (err) {
+    console.error('[matches/football]', err.message)
+    res.json({ data: [] })
+  }
+})
+
+// GET /matches/esports — Fonbet esports (CS2, Dota2, LoL, Valorant)
+router.get('/esports', async (req, res) => {
+  try {
+    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.esports, 80)
+    console.log(`[matches/esports] Fonbet: ${games.length} games`)
+    res.json({ data: games })
+  } catch (err) {
+    console.error('[matches/esports]', err.message)
+    res.json({ data: [] })
+  }
+})
+
+// GET /matches/tennis — Fonbet tennis
+router.get('/tennis', async (req, res) => {
+  try {
+    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.tennis, 60)
+    console.log(`[matches/tennis] Fonbet: ${games.length} games`)
+    res.json({ data: games })
+  } catch (err) {
+    console.error('[matches/tennis]', err.message)
+    res.json({ data: [] })
+  }
+})
+
+// GET /matches/basketball-fonbet — Fonbet basketball (EuroLeague, VTB, NBA etc)
+router.get('/basketball-fonbet', async (req, res) => {
+  try {
+    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.basketball, 60)
+    console.log(`[matches/basketball-fonbet] Fonbet: ${games.length} games`)
+    res.json({ data: games })
+  } catch (err) {
+    console.error('[matches/basketball-fonbet]', err.message)
+    res.json({ data: [] })
+  }
+})
+
+// GET /matches/fonbet-cache-reset — clear Fonbet cache
+router.get('/fonbet-cache-reset', (req, res) => {
+  fonbetCache = { data: null, tree: null, leagueNames: null, oddsMap: null, ts: 0 }
+  res.json({ ok: true, message: 'Fonbet cache cleared' })
+})
 
 function sstatsGet(path, params = {}) {
   return new Promise((resolve, reject) => {
