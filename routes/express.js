@@ -479,7 +479,7 @@ async function fetchHockeyOddsForExpress() {
 }
 
 // Parse and validate GPT JSON response into express data
-function parseExpressJson(content, date) {
+function parseExpressJson(content, date, sport = 'football') {
   const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
   const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
   if (!jsonMatch) throw new Error('Invalid JSON from OpenAI')
@@ -487,6 +487,15 @@ function parseExpressJson(content, date) {
   try { data = JSON.parse(jsonMatch[0]) } catch { throw new Error('JSON parse failed') }
   if (!data.picks || !Array.isArray(data.picks) || data.picks.length < 1) throw new Error('No picks in response')
   data.date = data.date || date
+
+  // For hockey: clamp individual odds to 2.00 max, then recalculate total
+  if (sport === 'hockey') {
+    data.picks = data.picks.map(p => ({
+      ...p,
+      odds: Math.min(parseFloat(p.odds) || 1.5, 2.00),
+    }))
+  }
+
   data.total_odds = Math.round(data.picks.reduce((acc, p) => acc * (parseFloat(p.odds) || 1), 1) * 100) / 100
   return data
 }
@@ -496,7 +505,12 @@ function buildSportExpressPrompt(sport, type, matches, date) {
   const isHockey = sport === 'hockey'
   const sportLabel = { hockey: 'хоккей' }[sport] || sport
 
-  const oddsReq = isHigh
+  const oddsReq = isHockey
+    ? `- Итоговый коэф экспресса: строго 2.00–3.00 (НЕ выше 3.00)
+- Выбери 2-3 события
+- Каждый коэф: от 1.25 до 2.00 (ЗАПРЕЩЕНО брать событие с коэфом выше 2.00)
+- Приоритет: надёжность выше доходности — лучше три коэфа по 1.40 чем два по 2.00`
+    : isHigh
     ? `- Итоговый коэф ≥ 4.00, выбери 3-4 события
 - Каждый коэф от 1.40 и выше`
     : `- Итоговый коэф 2.00–4.00, выбери 2-3 события
@@ -529,12 +543,12 @@ function buildSportExpressPrompt(sport, type, matches, date) {
     : `Коэффициенты оцени реалистично на основе силы команд, как у топ-букмекеров.`
 
   const predNote = isHockey
-    ? `"prediction" — ОБЯЗАТЕЛЬНО выбирай разнообразные ставки, не только П1/П2:
-  * Тотал: "ТБ 5.5" / "ТМ 5.5" (в хоккее типичный тотал 5.5 или 6.5)
-  * Фора: "Фора (-1.5)" / "Фора (+1.5)"
-  * Победа: "П1" / "П2"
-  * Двойной шанс: "1X" / "X2"
-  Выбирай ТУ ставку где у тебя наибольшая уверенность, независимо от типа`
+    ? `"prediction" — выбирай только НАДЁЖНЫЕ ставки с коэфом 1.25–2.00:
+  * Двойной шанс: "1X" / "X2" (коэф ~1.25–1.50) — самый надёжный вариант
+  * Тотал: "ТБ 5.5" / "ТМ 5.5" (коэф ~1.65–1.90)
+  * Победа явного фаворита: "П1" / "П2" (только если коэф ≤ 2.00)
+  * Фора фаворита: "Фора (-1.5)" только если очевидное преимущество
+  ЗАПРЕЩЕНО: брать событие с коэфом > 2.00`
     : `"prediction" — конкретная ставка (Победа хозяев / П1 / ТБ 2.5 / Фора (-1.5) / 1X)`
 
   const statsInstruction = hasAnyStats
@@ -716,7 +730,7 @@ async function generateSportExpress(sport, type, targetDate) {
     { role: 'system', content: `Ты эксперт по ставкам на спорт. Отвечай только валидным JSON на русском языке.` },
     { role: 'user', content: prompt },
   ])
-  return parseExpressJson(content, targetDate)
+  return parseExpressJson(content, targetDate, sport)
 }
 
 async function fetchRealMatches(targetDate) {
