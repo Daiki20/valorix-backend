@@ -498,11 +498,30 @@ router.get('/basketball-fonbet', async (req, res) => {
   }
 })
 
-// GET /matches/hockey-fonbet — Fonbet hockey (КХЛ, НХЛ, ВХЛ, МХЛ, ЧМ, etc.)
+// GET /matches/hockey-fonbet — Fonbet hockey odds (all leagues incl. IIHF, КХЛ, НХЛ, ВХЛ)
+// Returns ALL hockey events with odds1x2 — no data-coverage filter (used only for odds display)
 router.get('/hockey-fonbet', async (req, res) => {
   try {
-    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.hockey, 20)
-    console.log(`[matches/hockey-fonbet] Fonbet: ${games.length} games`)
+    const { data, tree, leagueNames, oddsMap } = await getFonbetData()
+    const rootSportId = FONBET_SPORT_IDS.hockey
+
+    const games = (data.events || [])
+      .filter(e => e.level === 1 && e.team1 && e.team2 && tree[e.sportId] === rootSportId)
+      .map(e => ({
+        id: `fonbet_${e.id}`,
+        fonbetId: e.id,
+        home: e.team1, away: e.team2,
+        league: leagueNames[e.sportId] || '',
+        date: fonbetFormatDate(e.startTime),
+        rawDate: new Date(e.startTime * 1000).toISOString(),
+        isLive: e.place === 'live',
+        odds1x2: oddsMap[e.id] || null,
+      }))
+      .filter(e => e.odds1x2)
+      .sort((a, b) => new Date(a.rawDate) - new Date(b.rawDate))
+      .slice(0, 60)
+
+    console.log(`[matches/hockey-fonbet] Fonbet all-leagues: ${games.length} games`)
     res.json({ data: games })
   } catch (err) {
     console.error('[matches/hockey-fonbet]', err.message)
