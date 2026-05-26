@@ -21,6 +21,19 @@ const ALL_LEAGUE_IDS = [
   235, // Russian Premier League
 ]
 
+// Cache "no matches" results to avoid repeated API scans (2h TTL)
+const noMatchCache = new Map()
+const NO_MATCH_TTL = 2 * 60 * 60 * 1000
+function isNoMatchCached(key) {
+  const exp = noMatchCache.get(key)
+  if (!exp) return false
+  if (Date.now() > exp) { noMatchCache.delete(key); return false }
+  return true
+}
+function setNoMatchCache(key) {
+  noMatchCache.set(key, Date.now() + NO_MATCH_TTL)
+}
+
 // Mutex — предотвращает параллельные генерации одного экспресса
 const generating = {}
 async function withMutex(key, fn) {
@@ -985,6 +998,9 @@ router.get('/today', async (req, res) => {
         }
 
         // 2. Не нашли — пробуем генерировать, начиная с завтра
+        const noMatchKey = `football_${type}`
+        if (isNoMatchCached(noMatchKey)) return null
+
         for (const date of CANDIDATE_DATES) {
           let row = null
           await withMutex(`${table}_${date}`, async () => {
@@ -1003,6 +1019,9 @@ router.get('/today', async (req, res) => {
           if (row) return formatRow(row, date, purchaseTable)
         }
 
+        // Кэшируем "нет матчей" на 2 часа — не сканируем повторно
+        setNoMatchCache(noMatchKey)
+        console.log(`[express/football] No matches found for any candidate date, caching miss for 2h`)
         return null
       }
 
@@ -1016,6 +1035,8 @@ router.get('/today', async (req, res) => {
     const getOrGenerateSport = async (type) => {
       let row = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(expressDate, sport, type)
       if (!row) {
+        const noMatchKey = `${sport}_${type}_${expressDate}`
+        if (isNoMatchCached(noMatchKey)) return null
         await withMutex(`sport_${sport}_${type}_${expressDate}`, async () => {
           const existing = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(expressDate, sport, type)
           if (existing) { row = existing; return }
@@ -1023,7 +1044,10 @@ router.get('/today', async (req, res) => {
             const data = await generateSportExpress(sport, type, expressDate)
             db.prepare('INSERT OR IGNORE INTO express_sports (date, sport, type, data) VALUES (?, ?, ?, ?)').run(expressDate, sport, type, JSON.stringify(data))
             row = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(expressDate, sport, type)
-          } catch (e) { console.error(`[express] ${sport}/${type}:`, e.message) }
+          } catch (e) {
+            console.error(`[express] ${sport}/${type}:`, e.message)
+            setNoMatchCache(noMatchKey)
+          }
         })
         if (!row) row = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(expressDate, sport, type)
       }
