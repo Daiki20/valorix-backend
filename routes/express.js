@@ -5,8 +5,8 @@ const { authenticate } = require('../middleware/auth')
 const { translateTeam } = require('../teamNames')
 
 const router = express.Router()
-const EXPRESS_COST_STANDARD = 39
-const EXPRESS_COST_HIGH = 49
+const EXPRESS_COST_STANDARD = 52
+const EXPRESS_COST_HIGH = 72
 
 // Только топ-лиги которые точно есть на BetBoom/Fonbet/Winline
 // Убрали UECL/Eredivisie/Portuguesa — там попадаются команды которых нет на русских букмекерах
