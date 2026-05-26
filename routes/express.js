@@ -479,7 +479,7 @@ async function fetchHockeyOddsForExpress() {
 }
 
 // Parse and validate GPT JSON response into express data
-function parseExpressJson(content, date, sport = 'football') {
+function parseExpressJson(content, date, sport = 'football', type = 'standard') {
   const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
   const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
   if (!jsonMatch) throw new Error('Invalid JSON from OpenAI')
@@ -488,13 +488,12 @@ function parseExpressJson(content, date, sport = 'football') {
   if (!data.picks || !Array.isArray(data.picks) || data.picks.length < 1) throw new Error('No picks in response')
   data.date = data.date || date
 
-  // For hockey: clamp individual odds to 2.00 max, then recalculate total
-  if (sport === 'hockey') {
-    data.picks = data.picks.map(p => ({
-      ...p,
-      odds: Math.min(parseFloat(p.odds) || 1.5, 2.00),
-    }))
-  }
+  // Clamp individual odds to prevent GPT from exceeding limits
+  const maxPickOdds = sport === 'hockey' ? 2.00 : (type === 'high' ? 2.50 : 2.00)
+  data.picks = data.picks.map(p => ({
+    ...p,
+    odds: Math.min(parseFloat(p.odds) || 1.5, maxPickOdds),
+  }))
 
   data.total_odds = Math.round(data.picks.reduce((acc, p) => acc * (parseFloat(p.odds) || 1), 1) * 100) / 100
   return data
@@ -568,34 +567,57 @@ ${statsInstruction}
 {"date":"${date}","picks":[{"home":"...","away":"...","league":"...","prediction":"1X","odds":1.40,"confidence":78,"reasoning":"Конкретное обоснование с цифрами из статистики"}],"total_odds":2.74,"summary":"Краткое описание почему этот экспресс надёжный"}`
   }
 
-  // ── Football prompt (unchanged) ──────────────────────────────────────────
-  const oddsReq = isHigh
-    ? `- Итоговый коэф ≥ 4.00, выбери 3-4 события
-- Каждый коэф от 1.40 и выше`
-    : `- Итоговый коэф 2.00–4.00, выбери 2-3 события
-- Каждый коэф 1.30–2.20`
+  // ── Football prompt ───────────────────────────────────────────────────────
+  const picksCount  = isHigh ? 3 : 2
+  const totalTarget = isHigh ? '3.00–5.00' : '2.00–3.00'
+  const pickMaxOdds = isHigh ? 2.50 : 2.00
+  const minConf     = isHigh ? 60 : 65
 
   const statsInstruction = hasAnyStats
-    ? `- В "reasoning" ОБЯЗАТЕЛЬНО используй реальную статистику из блока выше (личные встречи, форму команд, счета)
-- Ссылайся на конкретные цифры: "в последних 4 встречах ...", "команда выиграла X из 5 матчей" и т.д.`
-    : `- В "reasoning" объясни ПОЧЕМУ выбрал именно эту ставку (форма команд, статистика, сила составов)`
+    ? `- В "reasoning" ОБЯЗАТЕЛЬНО используй реальную статистику из блока выше
+- Ссылайся на конкретные цифры: "в последних X встречах ...", "забивает X.XX голов/игру"`
+    : `- В "reasoning" объясни ПОЧЕМУ выбрал эту ставку на основе силы команд`
 
-  return `Ты эксперт по ставкам на ${sportLabel}. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс на основе реального расписания и РЕАЛЬНОЙ статистики.
+  const betTypes = isHigh
+    ? `  * Победа фаворита "П1" / "П2" (коэф 1.40–2.50) — если явное превосходство
+  * Фора фаворита "Фора (-1.5)" — если разрыв в классе очевиден
+  * Тотал "ТБ 2.5" / "ТМ 2.5" — если статистика голов однозначна (коэф 1.50–2.00)
+  * Двойной шанс "1X" / "X2" — если хочешь снизить риск одного события
+  ЗАПРЕЩЕНО: коэф > 2.50`
+    : `  * Двойной шанс "1X" / "X2" (коэф ~1.25–1.55) — самый надёжный вариант
+  * Тотал "ТБ 2.5" / "ТМ 2.5" (коэф ~1.55–1.85) — если голевая статистика очевидна
+  * Победа явного фаворита "П1" / "П2" — только если коэф ≤ 2.00
+  ЗАПРЕЩЕНО: коэф > 2.00`
+
+  return `Ты эксперт по ставкам на футбол. Твоя задача — составить ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'МАКСИМАЛЬНО НАДЁЖНЫЙ'} экспресс из ${picksCount} событий.
 
 МАТЧИ НА ${date} (со статистикой):
 ${matchBlocks}
 
 Коэффициенты оцени реалистично на основе силы команд, как у топ-букмекеров.
 
-Требования:
-${oddsReq}
-- Выбирай ТОЛЬКО из матчей выше
-- Все текстовые поля СТРОГО на русском языке
-- "prediction" — конкретная ставка (Победа хозяев / П1 / ТБ 2.5 / Фора (-1.5) / 1X)
+ШАГ 1 — ОЦЕНКА КАЖДОГО МАТЧА.
+Для каждого матча определи:
+- Наиболее вероятный исход (тип ставки + направление)
+- Уверенность 0–100 на основе: формы команд, H2H, голевой статистики, разницы в классе
+- Матч подходит для экспресса если уверенность ≥ ${minConf}
+
+ШАГ 2 — ОТБОР ЛУЧШИХ ${picksCount}.
+Возьми ровно ${picksCount} матча с НАИБОЛЬШЕЙ уверенностью (≥ ${minConf}).
+Если подходящих матчей меньше ${picksCount} — бери лучшие из доступных (не ниже ${minConf - 10}).
+НИКОГДА не включай матч с уверенностью < ${minConf - 10}.
+
+ШАГ 3 — СТАВКИ.
+Для каждого отобранного матча выбери ставку:
+${betTypes}
+
+Итоговый коэф экспресса: строго ${totalTarget}.
+Выбирай ТОЛЬКО из матчей выше.
+Все текстовые поля СТРОГО на русском языке.
 ${statsInstruction}
 
 Ответь ТОЛЬКО валидным JSON без markdown:
-{"date":"${date}","picks":[{"home":"...","away":"...","league":"...","prediction":"ТБ 5.5","odds":1.82,"reasoning":"Конкретное обоснование с реальными цифрами из статистики выше"}],"total_odds":2.72,"summary":"Описание экспресса на русском"}`
+{"date":"${date}","picks":[{"home":"...","away":"...","league":"...","prediction":"1X","odds":1.45,"confidence":74,"reasoning":"Конкретное обоснование с цифрами из статистики"}],"total_odds":2.55,"summary":"Краткое описание почему этот экспресс надёжный"}`
 }
 
 // ── Real stats fetchers for express context ──────────────────────────────────
@@ -754,7 +776,7 @@ async function generateSportExpress(sport, type, targetDate) {
     { role: 'system', content: `Ты эксперт по ставкам на спорт. Отвечай только валидным JSON на русском языке.` },
     { role: 'user', content: prompt },
   ])
-  return parseExpressJson(content, targetDate, sport)
+  return parseExpressJson(content, targetDate, sport, type)
 }
 
 async function fetchRealMatches(targetDate) {
