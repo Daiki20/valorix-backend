@@ -10,17 +10,17 @@ let upcomingCache = { data: null, ts: 0 }
 let liveCache = { data: null, ts: 0 }
 let hockeyCache = { data: null, ts: 0 }
 let basketballCache = { data: null, ts: 0 }
-const UPCOMING_TTL = 15 * 60 * 1000
-const LIVE_TTL = 60 * 1000
-const HOCKEY_TTL = 10 * 60 * 1000
-const BASKETBALL_TTL = 6 * 60 * 60 * 1000
+const UPCOMING_TTL   = 15 * 60 * 1000   // 15 min — football upcoming
+const LIVE_TTL       =  1 * 60 * 1000   //  1 min — live scores (need freshness)
+const HOCKEY_TTL     = 30 * 60 * 1000   // 30 min — schedule rarely changes intra-hour
+const BASKETBALL_TTL =  6 * 60 * 60 * 1000  // 6 h
 
 // ── Fonbet API ────────────────────────────────────────────────────────────────
 // Root sport IDs in Fonbet: Футбол=1, Хоккей=2, Баскетбол=3, Теннис=4, Киберспорт=29086
 const FONBET_SPORT_IDS = { football: 1, hockey: 2, basketball: 3, tennis: 4, esports: 29086 }
 const FONBET_HOST = process.env.FONBET_HOST || 'line51w.bk6bba-resources.com'
 const FONBET_SCOPE = '1600'
-const FONBET_TTL = 2 * 60 * 1000   // 2 min cache
+const FONBET_TTL = 4 * 60 * 1000   // 4 min — odds don't change every second
 
 let fonbetCache = { data: null, tree: null, leagueNames: null, oddsMap: null, ts: 0 }
 
@@ -33,7 +33,7 @@ let fonbetCache = { data: null, tree: null, leagueNames: null, oddsMap: null, ts
 
 const _teamImgCache = new Map()   // name.lower → { url, ts, ok }  (L1 — memory)
 const TEAM_IMG_HIT_TTL  = 7 * 24 * 60 * 60 * 1000   // 7 days for found logos
-const TEAM_IMG_MISS_TTL =  30 * 60 * 1000             // 30 min for "not found" (retry)
+const TEAM_IMG_MISS_TTL =  4 * 60 * 60 * 1000        // 4 h for "not found" — avoids repeated Sofascore calls
 
 // Prepared statements for logo persistence
 const _logoGet  = db.prepare('SELECT url, ok, ts FROM team_logos WHERE name_key = ?')
