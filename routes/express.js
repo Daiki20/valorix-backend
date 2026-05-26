@@ -489,7 +489,7 @@ function parseExpressJson(content, date, sport = 'football', type = 'standard') 
   data.date = data.date || date
 
   // Clamp individual odds to prevent GPT from exceeding limits
-  const maxPickOdds = sport === 'hockey' ? 2.00 : (type === 'high' ? 1.80 : 1.60)
+  const maxPickOdds = type === 'high' ? 1.80 : 1.60
   data.picks = data.picks.map(p => ({
     ...p,
     odds: Math.min(parseFloat(p.odds) || 1.5, maxPickOdds),
@@ -527,7 +527,7 @@ function buildSportExpressPrompt(sport, type, matches, date) {
   if (isHockey) {
     const picksCount  = isHigh ? 3 : 2
     const totalTarget = isHigh ? '3.00–5.00' : '2.00–3.00'
-    const maxOdds     = isHigh ? 1.80 : 2.00
+    const maxOdds     = isHigh ? 1.80 : 1.60
     const minConf     = isHigh ? 60 : 65
 
     const oddsNote = `КОЭФФИЦИЕНТЫ:
@@ -539,10 +539,10 @@ function buildSportExpressPrompt(sport, type, matches, date) {
   * Тотал "ТБ 5.5" / "ТМ 5.5" (коэф ~1.50–1.80) — если статистика голов очевидна
   * Победа "П1" / "П2" — только если коэф ≤ 1.80 и явное превосходство
   ЗАПРЕЩЕНО: коэф > 1.80`
-      : `  * Двойной шанс "1X" / "X2" (коэф ~1.25–1.55) — самый надёжный вариант
-  * Тотал "ТБ 5.5" / "ТМ 5.5" (коэф ~1.65–1.90) — если статистика голов очевидна
-  * Победа "П1" / "П2" — только если коэф ≤ 2.00 и явное преимущество
-  ЗАПРЕЩЕНО: коэф > 2.00`
+      : `  * Двойной шанс "1X" / "X2" (коэф ~1.20–1.55) — самый надёжный вариант
+  * Тотал "ТБ 5.5" / "ТМ 5.5" (коэф ~1.45–1.60) — если статистика голов очевидна
+  * Победа "П1" / "П2" — только если коэф ≤ 1.60 и явное превосходство
+  ЗАПРЕЩЕНО: коэф > 1.60`
 
     const statsInstruction = hasAnyStats
       ? `- В "reasoning" ОБЯЗАТЕЛЬНО используй реальную статистику из блока выше
