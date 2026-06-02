@@ -180,39 +180,25 @@ router.post('/generate-from-match', authenticate, async (req, res) => {
   if (existing) return res.json({ already: true, article: existing })
 
   try {
-    // Получаем статистику из sstats
-    let homeForm = null, awayForm = null, h2h = [], odds = null, verdict = null, totalGoals = null, corners = null
+    // ── Шаг 1: получаем статистику из sstats ─────────────────────────────────
+    let homeForm = null, awayForm = null, h2h = []
 
     if (matchId) {
-      const [statsRes, oddsRes, h2hRes] = await Promise.allSettled([
+      const [statsRes, h2hRes] = await Promise.allSettled([
         sstatsGet('/Games/last-games-stats', { gameId: matchId }),
-        sstatsGet(`/Odds/${matchId}`),
         (homeId && awayId)
           ? sstatsGet('/Games/list', { ended: true, bothTeams: `${homeId},${awayId}`, limit: 10 })
           : Promise.resolve({ data: [] }),
       ])
-
       if (statsRes.status === 'fulfilled' && statsRes.value?.home) {
         homeForm = statsRes.value.home
         awayForm = statsRes.value.away
       }
       if (h2hRes.status === 'fulfilled') h2h = h2hRes.value?.data || []
-
-      // Определяем фаворита и тоталы из реальных данных
-      if (homeForm && awayForm) {
-        const homeWinRate = homeForm.wins / (homeForm.gamesCount || 1)
-        const awayWinRate = awayForm.wins / (awayForm.gamesCount || 1)
-        verdict = homeWinRate >= awayWinRate ? `Победа ${home} (П1)` : `Победа ${away} (П2)`
-        const avgGoals = ((homeForm.avgScore || 0) + (awayForm.avgConceded || 0) +
-                          (awayForm.avgScore || 0) + (homeForm.avgConceded || 0)) / 2
-        totalGoals = avgGoals < 2.5 ? 'ТМ 2.5' : 'ТБ 2.5'
-        const avgCorners = ((homeForm.avgCorners || 0) + (awayForm.avgCorners || 0))
-        corners = avgCorners > 0 ? (avgCorners < 9.5 ? 'ТМ 9.5' : 'ТБ 9.5') : null
-      }
     }
 
-    // Строим контекст для промпта
     const dateStr = formatMatchDate(date)
+
     const formBlock = homeForm ? `
 Форма за последние ${homeForm.gamesCount} матчей:
 - ${home}: ${homeForm.wins}П/${homeForm.draws}Н/${homeForm.loses}П, забивает ${homeForm.avgScore?.toFixed(2)} гола за матч
@@ -226,13 +212,56 @@ ${h2h.slice(0, 5).map(g => {
   return `- ${g.homeTeam?.name} ${hs}:${as} ${g.awayTeam?.name}`
 }).join('\n')}` : ''
 
-    const predictionBlock = verdict
-      ? `Прогноз Valorix AI:
-- Исход: ${verdict}
-- Тотал голов: ${totalGoals || 'данных недостаточно'}${corners ? `\n- Угловые: ${corners}` : ''}`
-      : ''
+    // ── Шаг 2: реальный AI-анализ матча (как на странице /analyze) ───────────
+    const analysisPrompt = `Ты профессиональный спортивный аналитик. Отвечай СТРОГО по-русски.
 
-    // Генерируем статью через OpenAI
+МАТЧ: ${home} vs ${away}
+ЛИГА: ${league || 'не указана'}
+ДАТА: ${dateStr || date || 'ближайшее время'}
+ВИД СПОРТА: ${sport}
+${formBlock}
+${h2hBlock}
+
+Сделай предматчевый анализ. Определи фаворита, дай 2-3 дополнительные ставки.
+
+Ответь СТРОГО в JSON (без markdown, без пояснений):
+{
+  "verdict": "чёткий вердикт — например 'Победа ${home}' или 'Победа ${away}' или 'Ничья'",
+  "confidence": число 50-90,
+  "risk": "low | medium | high",
+  "summary": "2-3 предложения с обоснованием вердикта",
+  "extraBets": [
+    {"type": "название ставки", "confidence": число},
+    {"type": "название ставки", "confidence": число},
+    {"type": "название ставки", "confidence": число}
+  ]
+}`
+
+    let aiVerdict = null, aiConfidence = null, aiRisk = null, aiSummary = null, aiExtraBets = []
+    try {
+      const analysisRaw = await openAIChat([
+        { role: 'system', content: 'Ты спортивный аналитик. Отвечай только JSON.' },
+        { role: 'user', content: analysisPrompt },
+      ], 600)
+      const cleaned = analysisRaw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
+      const parsed = JSON.parse(cleaned)
+      aiVerdict = parsed.verdict || null
+      aiConfidence = parsed.confidence || null
+      aiRisk = parsed.risk || null
+      aiSummary = parsed.summary || null
+      aiExtraBets = Array.isArray(parsed.extraBets) ? parsed.extraBets.slice(0, 3) : []
+    } catch (e) {
+      console.warn('[blog/generate] AI analysis failed, proceeding without:', e.message)
+    }
+
+    // ── Шаг 3: генерируем статью с реальным вердиктом ────────────────────────
+    const lockedBets = aiExtraBets.length > 0
+      ? aiExtraBets.map(b => `   🔒 ${b.type}: *** *(узнать полный анализ на Valorix)*`).join('\n')
+      : `   🔒 Тотал голов: Больше/Меньше *** *(узнать полный анализ на Valorix)*
+   🔒 Дополнительная ставка: *** *(узнать полный анализ на Valorix)*`
+
+    const verdictLine = aiVerdict || `[определи сам по контексту матча]`
+
     const prompt = `Ты опытный спортивный журналист. Напиши SEO-статью на русском языке о предстоящем матче.
 
 МАТЧ: ${home} — ${away}
@@ -240,25 +269,25 @@ ${h2h.slice(0, 5).map(g => {
 ДАТА: ${dateStr || date || 'ближайшее время'}
 ${formBlock}
 ${h2hBlock}
-${predictionBlock}
+ВЕРДИКТ AI: ${verdictLine}
+${aiSummary ? `ОБОСНОВАНИЕ: ${aiSummary}` : ''}
 
 ТРЕБОВАНИЯ К СТАТЬЕ:
-1. Заголовок: "[${home}] — [${away}]: прогноз на матч [дата]" — точно такой формат
+1. Заголовок: "${home} — ${away}: прогноз на матч ${dateStr || ''}" — точно такой формат
 2. Структура (используй ## для заголовков, СТРОГО в этом порядке):
    ## О матче (2-3 предложения — важность, контекст)
    ## Прогноз Valorix AI (СТРОГО по шаблону ниже — сразу после О матче!)
    ## Форма команд (опирайся на данные выше, без выдумок)
    ## История встреч (если есть данные выше)
    ## Итог (1-2 предложения)
-3. В разделе "Прогноз Valorix AI" используй СТРОГО этот формат:
+3. В разделе "Прогноз Valorix AI" используй СТРОГО этот формат (не менять):
    🤖 **Valorix AI прогнозирует:**
-   ✅ Исход: ${verdict || '[определи сам по контексту]'}
-   🔒 Тотал голов: Меньше/Больше *** *(узнать полный анализ на Valorix)*
-   🔒 Угловые: Меньше/Больше *** *(узнать полный анализ на Valorix)*
+   ✅ Исход: ${verdictLine}
+${lockedBets}
 4. В конце добавь CTA:
    > 🔍 Хочешь узнать полный разбор с коэффициентами и дополнительными ставками? [Анализируй матч на Valorix →](https://valorix.ru/analyze)
 5. Длина: 400-600 слов
-6. Каждая статья должна быть уникальной по стилю и структуре подачи
+6. Каждая статья должна быть уникальной по стилю
 7. НЕ выдумывай статистику которой нет в данных выше
 
 Ответь ТОЛЬКО текстом статьи в Markdown, без json и без пояснений.`
