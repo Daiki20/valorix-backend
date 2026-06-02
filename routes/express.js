@@ -8,9 +8,8 @@ const router = express.Router()
 const EXPRESS_COST_STANDARD = 52
 const EXPRESS_COST_HIGH = 72
 
-// Только топ-лиги которые точно есть на BetBoom/Fonbet/Winline
-// Убрали UECL/Eredivisie/Portuguesa — там попадаются команды которых нет на русских букмекерах
-const ALL_LEAGUE_IDS = [
+// Топ-лиги — ищем в первую очередь
+const TOP_LEAGUE_IDS = [
   2,   // Champions League
   3,   // Europa League
   39,  // Premier League
@@ -20,6 +19,46 @@ const ALL_LEAGUE_IDS = [
   61,  // Ligue 1
   235, // Russian Premier League
 ]
+
+// Расширенный список — используется когда топ-лиги не играют (международные перерывы, паузы)
+const EXTENDED_LEAGUE_IDS = [
+  5,   // UEFA Nations League (сборные Европы)
+  4,   // UEFA Euro Championship
+  1,   // FIFA World Cup
+  218, // FIFA World Cup Qualifiers Europe
+  848, // UEFA Conference League
+  94,  // Primeira Liga (Португалия)
+  88,  // Eredivisie (Нидерланды)
+  144, // Belgian Pro League (Бельгия)
+  203, // Süper Lig (Турция)
+  197, // Super League (Греция)
+  210, // Ukrainian Premier League (Украина)
+  179, // Scottish Premiership (Шотландия)
+  207, // Swiss Super League (Швейцария)
+  71,  // Brasileirao Serie A (Бразилия)
+  128, // Liga Profesional (Аргентина)
+  253, // MLS (США)
+  262, // Liga MX (Мексика)
+  40,  // EFL Championship (Англия 2)
+  79,  // Bundesliga 2 (Германия 2)
+  62,  // Ligue 2 (Франция 2)
+  236, // ФНЛ (Россия 2)
+]
+
+// Приоритет лиг для сортировки при расширенном поиске
+const LEAGUE_PRIORITY_EXPRESS = {
+  1: 1100, 4: 1100,                        // WC / Euro
+  5: 1050, 218: 1000,                      // Nations League / WC Qualifiers
+  2: 950, 3: 950, 848: 900,               // UCL / UEL / UECL
+  39: 900, 140: 900, 135: 900,             // PL / La Liga / Serie A
+  78: 900, 61: 900, 235: 850,              // Bundesliga / Ligue 1 / РПЛ
+  94: 800, 88: 800, 144: 800,              // Portugal / Netherlands / Belgium
+  203: 800, 197: 750, 210: 750,            // Turkey / Greece / Ukraine
+  179: 750, 207: 750,                      // Scotland / Switzerland
+  71: 700, 128: 700,                       // Brazil / Argentina
+  253: 650, 262: 650,                      // MLS / Liga MX
+  40: 600, 79: 600, 62: 600, 236: 600,    // England 2 / Germany 2 / France 2 / ФНЛ
+}
 
 // Cache "no matches" results to avoid repeated API scans (2h TTL)
 const noMatchCache = new Map()
@@ -797,18 +836,59 @@ async function fetchRealMatches(targetDate) {
   const key = process.env.SSTATS_API_KEY
   if (!key) return { matches: [], date: targetDate }
 
-  const results = await Promise.all(
-    ALL_LEAGUE_IDS.map(id =>
+  // Шаг 1: ищем в топ-лигах
+  const topResults = await Promise.all(
+    TOP_LEAGUE_IDS.map(id =>
       httpsGet(`https://api.sstats.net/Games/list?upcoming=true&leagueid=${id}&limit=5&apikey=${key}`)
         .catch(() => ({ data: [] }))
     )
   )
 
-  const allGames = results.flatMap(r => Array.isArray(r.data) ? r.data : [])
+  const normalizeGame = g => ({
+    id: g.id,
+    home: translateTeam(g.homeTeam.name),
+    away: translateTeam(g.awayTeam.name),
+    league: g.season?.league?.name || 'Unknown',
+    leagueId: g.season?.league?.id || null,
+  })
 
-  const matches = allGames
+  const topGames = topResults.flatMap(r => Array.isArray(r.data) ? r.data : [])
+  let matches = topGames
     .filter(g => g.date && g.homeTeam?.name && g.awayTeam?.name && g.date.slice(0, 10) === targetDate)
-    .map(g => ({ id: g.id, home: translateTeam(g.homeTeam.name), away: translateTeam(g.awayTeam.name), league: g.season?.league?.name || 'Unknown' }))
+    .map(normalizeGame)
+
+  console.log(`[express] fetchRealMatches TOP: date=${targetDate}, found=${matches.length} matches`)
+
+  // Шаг 2: если меньше 2 матчей — расширяем поиск (международные перерывы, другие лиги)
+  if (matches.length < 2) {
+    console.log(`[express] Expanding to extended leagues (national teams, secondary leagues)...`)
+    const extResults = await Promise.all(
+      EXTENDED_LEAGUE_IDS.map(id =>
+        httpsGet(`https://api.sstats.net/Games/list?upcoming=true&leagueid=${id}&limit=5&apikey=${key}`)
+          .catch(() => ({ data: [] }))
+      )
+    )
+    const extGames = extResults.flatMap(r => Array.isArray(r.data) ? r.data : [])
+    const extMatches = extGames
+      .filter(g => g.date && g.homeTeam?.name && g.awayTeam?.name && g.date.slice(0, 10) === targetDate)
+      .map(normalizeGame)
+
+    // Объединяем без дублей
+    for (const m of extMatches) {
+      if (!matches.some(g => g.home === m.home && g.away === m.away)) {
+        matches.push(m)
+      }
+    }
+
+    // Сортируем по приоритету лиги
+    matches.sort((a, b) => {
+      const pa = LEAGUE_PRIORITY_EXPRESS[a.leagueId] || 0
+      const pb = LEAGUE_PRIORITY_EXPRESS[b.leagueId] || 0
+      return pb - pa
+    })
+
+    console.log(`[express] fetchRealMatches EXTENDED: total=${matches.length} matches (leagues: ${[...new Set(matches.map(m => m.league))].join(', ')})`)
+  }
 
   console.log(`[express] fetchRealMatches: date=${targetDate}, found=${matches.length} matches`)
   return { matches, date: targetDate }
@@ -1185,7 +1265,7 @@ router.get('/debug-football', authenticate, async (req, res) => {
 
   try {
     // Проверяем каждую лигу отдельно
-    for (const leagueId of ALL_LEAGUE_IDS) {
+    for (const leagueId of TOP_LEAGUE_IDS) {
       try {
         const data = await httpsGet(
           `https://api.sstats.net/Games/list?upcoming=true&leagueid=${leagueId}&limit=10&apikey=${process.env.SSTATS_API_KEY}`
