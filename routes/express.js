@@ -1443,7 +1443,8 @@ router.post('/generate', authenticate, async (req, res) => {
     db.prepare('INSERT OR REPLACE INTO daily_express_high (date, data) VALUES (?, ?)').run(expressDate, JSON.stringify(high))
     res.json({ success: true, date: expressDate, standard, high })
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    const status = err.message?.includes('Нет') ? 404 : 500
+    res.status(status).json({ error: err.message })
   }
 })
 
