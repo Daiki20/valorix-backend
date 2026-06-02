@@ -275,8 +275,9 @@ async function getFonbetData() {
 function getLeagueScore(sport, leagueName) {
   const l = (leagueName || '').toLowerCase()
 
-  // Youth / amateur / regional — always bottom regardless of sport
-  if (/\bдо\s*(16|17|18|19|20|21|23)\b|u(16|17|18|19|20|21|23)\b|молодёж|юнош|любит|аматор|amateur|женщ|women|female/.test(l)) return 20
+  // Youth / amateur / regional / reserve — always filter out
+  if (/\bдо\s*(16|17|18|19|20|21|23)\b|u(16|17|18|19|20|21|23)\b|молодёж|юнош|любит|аматор|amateur|женщ|women|female/.test(l)) return 0
+  if (/резервн|reserv[ao]|b-team|\bрезерв\b/.test(l)) return 0
 
   if (sport === 'football') {
     // Virtual/esports football (FC 24, FC 26, ESports Battle, Volta) — always filter out
@@ -285,8 +286,10 @@ function getLeagueScore(sport, leagueName) {
     if (/лига чемпионов|champions league|лч ucl/.test(l))               return 1000
     if (/лига европы|europa league|лe uel/.test(l))                     return 950
     if (/конференц.лига|conference league/.test(l))                      return 900
+    if (/товарищ.*сборн|топ\s+сборн|international.*friendly|nations league/i.test(l)) return 880
     if (/англия.*премьер|premier league|апл/.test(l))                    return 850
-    if (/испания.*ла лига|la liga|примера дивизион/.test(l))             return 840
+    // La Liga: must mention spain to avoid matching Bolivia's "Primera Division"
+    if (/испания.*ла лига|испания.*примера|la liga\b/.test(l))           return 840
     if (/германия.*бундеслига[^2]|бундеслига[^2]/.test(l))              return 830
     if (/италия.*серия а[^б]|serie a/.test(l))                           return 820
     if (/франция.*лига 1|ligue 1/.test(l))                               return 810
@@ -294,20 +297,21 @@ function getLeagueScore(sport, leagueName) {
     if (/португалия.*примейра|primeira liga/.test(l))                    return 780
     if (/нидерланды.*эредивизи|eredivisie/.test(l))                      return 760
     if (/турция.*суперлига|süper lig|турецкая суперлига/.test(l))        return 750
-    if (/бельгия|шотландия.*прем|греция.*суперлига/.test(l))             return 720
+    if (/бельгия.*прем|шотландия.*прем|греция.*суперлига/.test(l))      return 720
     if (/украина.*прем/.test(l))                                          return 710
-    // Major cups only — minor country cups are excluded
-    if (/копа дель рей|fa cup|dfb.?pokal|coppa italia|coupe de france/.test(l)) return 700
+    // Major cups only (country-specific)
+    if (/испания.*куп|копа дель рей|fa cup|dfb.?pokal|coppa italia|coupe de france/.test(l)) return 700
     if (/кубок рос|кубок укра|кубок беларус|кубок польш/.test(l))       return 680
     if (/португалия.*куп|taça de portugal/.test(l))                      return 670
     if (/копа.*либертад|libertadores/.test(l))                           return 700
     if (/копа.*судамер|sudamericana/.test(l))                            return 650
     if (/бразилия.*серия а|серия а.*бразил|brasileirao/.test(l))        return 680
-    if (/аргентина.*примера|аргентина.*лига/.test(l))                    return 660
+    // Argentina: only top division (not reserve/B leagues)
+    if (/аргентина.*примера\s+дивис|аргентина.*примера\s+насьон/.test(l)) return 660
     if (/млс|mls|лига мекс|liga mx/.test(l))                             return 600
     if (/бундеслига 2|серия б|лига 2|чемпионшип/.test(l))               return 400
     if (/третья|3.* дивизион|третий/.test(l))                            return 200
-    return 50   // unknown league — no data in sstats.net, will be filtered out
+    return 50   // unknown league — filtered out by hasDataCoverage (requires > 50)
   }
 
   if (sport === 'hockey') {
