@@ -95,6 +95,66 @@ function normalize(s) {
   return (s || '').toLowerCase().replace(/[^a-zа-яё0-9]/gi, '')
 }
 
+// ── API-Football (RapidAPI) ──────────────────────────────────────────────────
+const APIFOOTBALL_HOST = 'api-football-v1.p.rapidapi.com'
+function apiFootballGet(path, params = {}) {
+  const key = process.env.RAPIDAPI_KEY
+  if (!key) return Promise.reject(new Error('No RAPIDAPI_KEY'))
+  return new Promise((resolve, reject) => {
+    const qs = new URLSearchParams(params).toString()
+    const options = {
+      hostname: APIFOOTBALL_HOST,
+      path: qs ? `${path}?${qs}` : path,
+      method: 'GET',
+      timeout: 8000,
+      headers: {
+        'X-RapidAPI-Key': key,
+        'X-RapidAPI-Host': APIFOOTBALL_HOST,
+        'Accept': 'application/json',
+      },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => { try { resolve(JSON.parse(data)) } catch { reject(new Error('parse')) } })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    req.end()
+  })
+}
+
+// ── TheSportsDB (free, no key needed) ────────────────────────────────────────
+function theSportsDBGet(path) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'www.thesportsdb.com',
+      path: `/api/v1/json/3/${path}`,
+      method: 'GET',
+      timeout: 8000,
+      headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0' },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => { try { resolve(JSON.parse(data)) } catch { reject(new Error('parse')) } })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    req.end()
+  })
+}
+
+// sstats league IDs → API-Football league IDs (mostly 1:1)
+const LEAGUE_TO_APIFOOTBALL = {
+  2: 2, 3: 3, 848: 848,           // UCL / UEL / UECL
+  39: 39, 140: 140, 135: 135,     // PL / La Liga / Serie A
+  78: 78, 61: 61, 94: 94,         // Bundesliga / Ligue 1 / Portugal
+  88: 88, 144: 144, 203: 203,     // Netherlands / Belgium / Turkey
+  235: 235, 40: 40, 79: 79,       // РПЛ / Championship / Bundesliga 2
+  197: 197, 210: 210, 179: 179,   // Greece / Ukraine / Scotland
+}
+
 function fuzzyMatch(a, b) {
   if (!a || !b) return false
   if (a === b) return true
@@ -895,6 +955,123 @@ router.post('/sport-form', authenticate, async (req, res) => {
   }
 
   res.json({ error: 'Both BallDontLie and AllSports unavailable', sport })
+})
+
+// ── Football enrichment: TheSportsDB logos + API-Football injuries/lineups ───
+// Called before AI analysis — enriches prompt with real squad/injury data
+// Caches logos 7 days, injuries/lineups 12h to stay within 100 req/day quota
+const ENRICH_TTL_LOGOS   = 7 * 24 * 60 * 60 * 1000  // 7 days
+const ENRICH_TTL_SQUADS  = 12 * 60 * 60 * 1000       // 12 hours
+
+router.post('/football-enrich', authenticate, async (req, res) => {
+  const { homeEn, awayEn, date, leagueId } = req.body || {}
+  if (!homeEn || !awayEn) return res.status(400).json({ error: 'Missing homeEn/awayEn' })
+
+  const result = {
+    homeLogoTSDB: null, awayLogoTSDB: null,
+    homeStadium: null,  awayStadium: null,
+    injuries: null,     lineups: null,
+  }
+
+  // ── Step 1: TheSportsDB logos (free, cached 7 days) ───────────────────────
+  const logoKey = `tsdb_${normalize(homeEn)}_${normalize(awayEn)}`
+  const cachedLogos = cacheGet(logoKey, ENRICH_TTL_LOGOS)
+  if (cachedLogos) {
+    const logos = JSON.parse(cachedLogos)
+    Object.assign(result, logos)
+  } else {
+    try {
+      const [homeData, awayData] = await Promise.allSettled([
+        theSportsDBGet(`searchteams.php?t=${encodeURIComponent(homeEn)}`),
+        theSportsDBGet(`searchteams.php?t=${encodeURIComponent(awayEn)}`),
+      ])
+      const homeTeam = homeData.status === 'fulfilled' ? homeData.value?.teams?.[0] : null
+      const awayTeam = awayData.status === 'fulfilled' ? awayData.value?.teams?.[0] : null
+
+      const logos = {
+        homeLogoTSDB: homeTeam?.strTeamBadge || null,
+        awayLogoTSDB: awayTeam?.strTeamBadge || null,
+        homeStadium:  homeTeam?.strStadium   || null,
+        awayStadium:  awayTeam?.strStadium   || null,
+      }
+      Object.assign(result, logos)
+      cacheSet(logoKey, JSON.stringify(logos))
+      console.log(`[enrich/tsdb] ${homeEn} vs ${awayEn}: home_logo=${!!logos.homeLogoTSDB}, away_logo=${!!logos.awayLogoTSDB}`)
+    } catch (err) {
+      console.warn('[enrich/tsdb]', err.message)
+    }
+  }
+
+  // ── Step 2: API-Football injuries + lineups (100 req/day, cached 12h) ──────
+  const squadKey = `apifb_${normalize(homeEn)}_${normalize(awayEn)}_${date || 'nd'}`
+  const cachedSquads = cacheGet(squadKey, ENRICH_TTL_SQUADS)
+  if (cachedSquads) {
+    const squads = JSON.parse(cachedSquads)
+    result.injuries = squads.injuries
+    result.lineups  = squads.lineups
+  } else if (date && LEAGUE_TO_APIFOOTBALL[leagueId] && process.env.RAPIDAPI_KEY) {
+    try {
+      const apiLeague = LEAGUE_TO_APIFOOTBALL[leagueId]
+      const season = new Date(date).getFullYear()
+      const fixturesData = await apiFootballGet('/v3/fixtures', { date, league: apiLeague, season })
+      const fixtures = fixturesData?.response || []
+
+      // Fuzzy-match fixture by team names
+      const normStr = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+      const hN = normStr(homeEn), aN = normStr(awayEn)
+      const fixture = fixtures.find(f => {
+        const fh = normStr(f.teams?.home?.name), fa = normStr(f.teams?.away?.name)
+        return (fh.includes(hN) || hN.includes(fh)) && (fa.includes(aN) || aN.includes(fa))
+      })
+
+      const squads = { injuries: null, lineups: null }
+      if (fixture) {
+        const fid = fixture.fixture?.id
+        const [injRes, linRes] = await Promise.allSettled([
+          apiFootballGet('/v3/injuries', { fixture: fid }),
+          apiFootballGet('/v3/fixtures/lineups', { fixture: fid }),
+        ])
+
+        // Parse injuries
+        if (injRes.status === 'fulfilled') {
+          const inj = injRes.value?.response || []
+          if (inj.length) {
+            const pickSide = (teamName) => inj
+              .filter(i => normStr(i.team?.name).includes(normStr(teamName)) || normStr(teamName).includes(normStr(i.team?.name || '')))
+              .map(i => ({ player: i.player?.name, reason: i.player?.reason || i.player?.type || 'травма' }))
+            squads.injuries = { home: pickSide(homeEn), away: pickSide(awayEn) }
+          }
+        }
+
+        // Parse lineups
+        if (linRes.status === 'fulfilled') {
+          const lins = linRes.value?.response || []
+          if (lins.length >= 1) {
+            const parseSide = (l) => l ? {
+              formation: l.formation,
+              coach: l.coach?.name,
+              startXI: (l.startXI || []).map(p => p.player?.name).filter(Boolean),
+            } : null
+            // Match home/away by team name
+            const hLin = lins.find(l => normStr(l.team?.name).includes(hN) || hN.includes(normStr(l.team?.name || '')))
+            const aLin = lins.find(l => normStr(l.team?.name).includes(aN) || aN.includes(normStr(l.team?.name || '')))
+            squads.lineups = { home: parseSide(hLin), away: parseSide(aLin) }
+          }
+        }
+        console.log(`[enrich/apifb] fixture ${fid}: injuries=${!!squads.injuries}, lineups=${!!squads.lineups}`)
+      } else {
+        console.warn(`[enrich/apifb] no fixture for ${homeEn} vs ${awayEn} on ${date} league=${apiLeague}`)
+      }
+
+      result.injuries = squads.injuries
+      result.lineups  = squads.lineups
+      cacheSet(squadKey, JSON.stringify(squads))
+    } catch (err) {
+      console.warn('[enrich/apifb]', err.message)
+    }
+  }
+
+  res.json(result)
 })
 
 // ── sstats proxy — hides API key from frontend bundle ────────────────────────
