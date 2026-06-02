@@ -279,6 +279,9 @@ function getLeagueScore(sport, leagueName) {
   if (/\bдо\s*(16|17|18|19|20|21|23)\b|u(16|17|18|19|20|21|23)\b|молодёж|юнош|любит|аматор|amateur|женщ|women|female/.test(l)) return 20
 
   if (sport === 'football') {
+    // Virtual/esports football (FC 24, FC 26, ESports Battle, Volta) — always filter out
+    if (/esports.?battle|volta\s+champions|fc\s*2[456]|fifa\s+\d+|virtual.*football|\befc\b/i.test(l)) return 0
+
     if (/лига чемпионов|champions league|лч ucl/.test(l))               return 1000
     if (/лига европы|europa league|лe uel/.test(l))                     return 950
     if (/конференц.лига|conference league/.test(l))                      return 900
@@ -292,7 +295,13 @@ function getLeagueScore(sport, leagueName) {
     if (/нидерланды.*эредивизи|eredivisie/.test(l))                      return 760
     if (/турция.*суперлига|süper lig|турецкая суперлига/.test(l))        return 750
     if (/бельгия|шотландия.*прем|греция.*суперлига/.test(l))             return 720
-    if (/украина.*прем|португалия.*куп|копа дель рей|кубок/.test(l))    return 700
+    if (/украина.*прем/.test(l))                                          return 710
+    // Major cups only — minor country cups are excluded
+    if (/копа дель рей|fa cup|dfb.?pokal|coppa italia|coupe de france/.test(l)) return 700
+    if (/кубок рос|кубок укра|кубок беларус|кубок польш/.test(l))       return 680
+    if (/португалия.*куп|taça de portugal/.test(l))                      return 670
+    if (/копа.*либертад|libertadores/.test(l))                           return 700
+    if (/копа.*судамер|sudamericana/.test(l))                            return 650
     if (/бразилия.*серия а|серия а.*бразил|brasileirao/.test(l))        return 680
     if (/аргентина.*примера|аргентина.*лига/.test(l))                    return 660
     if (/млс|mls|лига мекс|liga mx/.test(l))                             return 600
