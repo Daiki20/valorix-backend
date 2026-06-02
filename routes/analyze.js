@@ -897,6 +897,54 @@ router.post('/sport-form', authenticate, async (req, res) => {
   res.json({ error: 'Both BallDontLie and AllSports unavailable', sport })
 })
 
+// ── sstats proxy — hides API key from frontend bundle ────────────────────────
+// Allowed path prefixes (whitelist to prevent abuse)
+const SSTATS_ALLOWED_PATHS = [
+  '/Teams/list', '/Games/list', '/Games/last-games-stats',
+  '/Games/glicko/', '/Games/statistics', '/Games/',
+  '/Odds/', '/Pari/matches',
+]
+
+function sstatsProxyGet(path, params = {}) {
+  const key = process.env.SSTATS_API_KEY
+  if (!key) return Promise.reject(new Error('SSTATS_API_KEY not configured'))
+  const qs = new URLSearchParams({ ...params, apikey: key }).toString()
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.sstats.net',
+      path: `${path}?${qs}`,
+      method: 'GET',
+      timeout: 10000,
+      headers: { 'Accept': 'application/json' },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => {
+        if (res.statusCode >= 400) { reject(new Error(`sstats HTTP ${res.statusCode}`)); return }
+        try { resolve(JSON.parse(data)) } catch { reject(new Error('sstats parse error')) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('sstats timeout')) })
+    req.end()
+  })
+}
+
+router.post('/sstats', authenticate, async (req, res) => {
+  const { path, params = {} } = req.body || {}
+  if (!path || typeof path !== 'string') return res.status(400).json({ error: 'Missing path' })
+  if (!SSTATS_ALLOWED_PATHS.some(p => path.startsWith(p))) {
+    return res.status(400).json({ error: 'Path not allowed' })
+  }
+  try {
+    const data = await sstatsProxyGet(path, params)
+    res.json(data)
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
 // ── OpenAI proxy — replaces Cloudflare Worker for Russian users ──────────────
 router.post('/ai-proxy', authenticate, async (req, res) => {
   try {
