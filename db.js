@@ -139,6 +139,26 @@ db.exec(`
   );
 `)
 
+// Blog articles
+db.exec(`
+  CREATE TABLE IF NOT EXISTS articles (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug        TEXT UNIQUE NOT NULL,
+    title       TEXT NOT NULL,
+    excerpt     TEXT,
+    content     TEXT NOT NULL,
+    meta_title  TEXT,
+    meta_desc   TEXT,
+    cover_url   TEXT,
+    published   INTEGER NOT NULL DEFAULT 0,
+    views       INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_articles_slug      ON articles(slug);
+  CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published, created_at);
+`)
+
 // Seed super-admin
 db.prepare(`
   UPDATE users SET is_admin = 1 WHERE email = 'andrey.pishev2021@yandex.ru'

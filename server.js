@@ -24,6 +24,7 @@ const analyzeRoutes = require('./routes/analyze')
 const shareRoutes = require('./routes/share')
 const expressRoutes = require('./routes/express')
 const matchesRoutes = require('./routes/matches')
+const blogRoutes = require('./routes/blog')
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -94,6 +95,21 @@ app.use('/analyze', analyzeRoutes)
 app.use('/share', shareRoutes)
 app.use('/express', expressRoutes)
 app.use('/matches', matchesRoutes)
+app.use('/blog', blogRoutes)
+
+// Sitemap.xml — помогает Google находить все статьи
+app.get('/sitemap.xml', (req, res) => {
+  const db = require('./db')
+  const articles = db.prepare("SELECT slug, updated_at FROM articles WHERE published = 1 ORDER BY created_at DESC").all()
+  const base = 'https://valorix.ru'
+  const staticPages = ['', '/blog']
+  const urls = [
+    ...staticPages.map(p => `<url><loc>${base}${p}</loc><changefreq>weekly</changefreq><priority>${p === '' ? '1.0' : '0.8'}</priority></url>`),
+    ...articles.map(a => `<url><loc>${base}/blog/${a.slug}</loc><lastmod>${(a.updated_at || '').slice(0,10)}</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>`),
+  ]
+  res.set('Content-Type', 'application/xml')
+  res.send(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.join('')}</urlset>`)
+})
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }))
