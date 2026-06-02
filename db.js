@@ -159,13 +159,15 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_articles_slug      ON articles(slug);
   CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published, created_at);
-  CREATE INDEX IF NOT EXISTS idx_articles_sport     ON articles(sport);
 `)
 
-// Add sport/match_key columns to existing installs
+// Add sport/match_key columns to existing installs (must run BEFORE index on sport)
 const artCols = db.prepare("PRAGMA table_info(articles)").all().map(c => c.name)
 if (!artCols.includes('sport'))     db.exec("ALTER TABLE articles ADD COLUMN sport TEXT NOT NULL DEFAULT 'other'")
 if (!artCols.includes('match_key')) db.exec("ALTER TABLE articles ADD COLUMN match_key TEXT")
+
+// Create sport index AFTER migration so column is guaranteed to exist
+db.exec("CREATE INDEX IF NOT EXISTS idx_articles_sport ON articles(sport)")
 
 // Seed super-admin
 db.prepare(`
