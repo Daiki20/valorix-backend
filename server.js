@@ -111,6 +111,58 @@ app.get('/sitemap.xml', (req, res) => {
   res.send(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.join('')}</urlset>`)
 })
 
+// RSS / Yandex Turbo — ускоренные страницы в мобильном поиске Яндекса
+app.get('/rss.xml', (req, res) => {
+  const db = require('./db')
+  const articles = db.prepare("SELECT slug, title, excerpt, content, cover_url, created_at, updated_at FROM articles WHERE published = 1 ORDER BY created_at DESC LIMIT 50").all()
+  const base = 'https://valorix.ru'
+  const esc = s => (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+
+  // Convert basic Markdown to HTML for Turbo content
+  const mdToHtml = md => (md || '')
+    .replace(/^#{1}\s+(.+)$/gm,  '<h1>$1</h1>')
+    .replace(/^#{2}\s+(.+)$/gm,  '<h2>$1</h2>')
+    .replace(/^#{3}\s+(.+)$/gm,  '<h3>$1</h3>')
+    .replace(/\*\*(.+?)\*\*/g,   '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g,       '<em>$1</em>')
+    .replace(/^[-*]\s+(.+)$/gm,  '<li>$1</li>')
+    .replace(/(<li>.*<\/li>\n?)+/g, s => `<ul>${s}</ul>`)
+    .replace(/\n{2,}/g, '</p><p>')
+    .replace(/^(?!<[h|u|l])(.+)$/gm, '$1')
+    .replace(/^<\/p><p>/, '')
+    .trim()
+
+  const items = articles.map(a => {
+    const html = mdToHtml(a.content)
+    const cover = a.cover_url ? `<figure><img src="${esc(a.cover_url)}" /></figure>` : ''
+    return `
+    <item turbo="true">
+      <link>${base}/blog/${a.slug}</link>
+      <turbo:topic>${esc(a.title)}</turbo:topic>
+      <pubDate>${new Date(a.created_at).toUTCString()}</pubDate>
+      <turbo:content><![CDATA[
+        ${cover}
+        <header><h1>${esc(a.title)}</h1></header>
+        <p>${esc(a.excerpt || '')}</p>
+        ${html}
+        <p><a href="${base}/analyze">Попробовать AI-анализ матча бесплатно →</a></p>
+      ]]></turbo:content>
+    </item>`
+  }).join('\n')
+
+  res.set('Content-Type', 'application/rss+xml; charset=utf-8')
+  res.send(`<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:turbo="http://turbo.yandex.ru" version="2.0">
+  <channel>
+    <title>Valorix AI — Аналитика ставок</title>
+    <link>${base}/blog</link>
+    <description>Статьи об анализе спортивных матчей, стратегиях ставок и разборы лиг</description>
+    <language>ru</language>
+    ${items}
+  </channel>
+</rss>`)
+})
+
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }))
 
