@@ -655,6 +655,7 @@ function sstatsGet(path, params = {}) {
 
 const LEAGUE_IDS = [
   1, 4, 5,              // FIFA World Cup / UEFA Euro / Nations League
+  667,                  // Международные товарищеские матчи (сборные)
   2, 3, 848,            // UCL / UEL / UECL
   39, 140, 135, 78, 61, // PL / La Liga / Serie A / Bundesliga / Ligue 1
   94, 88, 144, 203, 179, 207, 197, 210,
