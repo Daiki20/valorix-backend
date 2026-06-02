@@ -654,8 +654,9 @@ function sstatsGet(path, params = {}) {
 }
 
 const LEAGUE_IDS = [
-  2, 3, 848,
-  39, 140, 135, 78, 61,
+  1, 4, 5,              // FIFA World Cup / UEFA Euro / Nations League
+  2, 3, 848,            // UCL / UEL / UECL
+  39, 140, 135, 78, 61, // PL / La Liga / Serie A / Bundesliga / Ligue 1
   94, 88, 144, 203, 179, 207, 197, 210,
   235, 236,
   71, 128, 131, 13,
