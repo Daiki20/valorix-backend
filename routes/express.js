@@ -941,87 +941,87 @@ const ODDS_TRANSLATION = `Перевод названий ставок на ру
 - Asian Handicap Away N → Фора гостей (N)`
 
 async function generateExpress(targetDate, type = 'standard') {
-  const { matches: realMatches, date: actualDate } = await fetchRealMatches(targetDate)
+  // Берём матчи из Fonbet (тот же список что на странице анализа)
+  const { getFonbetFootballMatches } = require('./matches')
+  const matches = await getFonbetFootballMatches(targetDate)
 
-  if (realMatches.length >= 2) {
-    const oddsTexts = await Promise.all(realMatches.map(m => fetchOddsText(m.id)))
+  if (matches.length < 2) {
+    throw new Error(`Нет матчей Fonbet на ${targetDate}. Попробуйте перегенерировать позже.`)
+  }
 
-    const matchesWithOdds = realMatches.filter((m, i) => oddsTexts[i] !== null)
-    const filteredOdds = oddsTexts.filter(o => o !== null)
-    const useMatchesFull = matchesWithOdds.length >= 2 ? matchesWithOdds : realMatches
-    const useOddsFull = matchesWithOdds.length >= 2 ? filteredOdds : oddsTexts
-    // Максимум 6 матчей в промпте чтобы не превысить TPM лимит
-    const useMatches = useMatchesFull.slice(0, 6)
-    const useOdds = useOddsFull.slice(0, 6)
+  // Максимум 10 матчей в промпте
+  const useMatches = matches.slice(0, 10)
 
-    const matchBlocks = useMatches.map((m, i) => {
-      const oddsBlock = useOdds[i]
-        ? `\n${useOdds[i]}`
-        : '\n  (коэффициенты недоступны — пропусти этот матч)'
-      return `${i + 1}. ${m.home} — ${m.away} (${m.league})${oddsBlock}`
-    }).join('\n\n')
+  const matchBlocks = useMatches.map((m, i) => {
+    const o = m.odds1x2
+    const oddsLine = o
+      ? `П1=${o.home}  X=${o.draw}  П2=${o.away}`
+      : '(коэффициенты недоступны)'
+    return `${i + 1}. ${m.home} — ${m.away} (${m.league})\n   ${oddsLine}`
+  }).join('\n\n')
 
-    const isHigh = type === 'high'
-    const oddsRequirement = isHigh
-      ? `- Итоговый коэффициент экспресса должен быть НЕ МЕНЕЕ 4.00
-- Выбирай более смелые исходы: победы андердогов, форы, тоталы с высоким коэфом (≥1.50)
-- 3-4 события, каждый коэффициент от 1.40 и выше
-- Вероятность прохода каждой ставки >50%`
-      : `- Итоговый коэффициент экспресса от 2.00 до 4.00
-- Выбирай надёжные исходы с высокой вероятностью прохода >65%
-- 2-3 события, минимальный коэффициент 1.33, максимальный 2.20`
+  const isHigh = type === 'high'
+  const oddsRequirement = isHigh
+    ? `- Выбери РОВНО 3 события
+- Итоговый коэффициент экспресса НЕ МЕНЕЕ 3.00
+- Каждый коэффициент от 1.40 и выше
+- Можно выбирать П1, П2, X или Двойной шанс (1X / X2)
+- Вероятность прохода каждой ставки >55%`
+    : `- Выбери РОВНО 2 события
+- Итоговый коэффициент экспресса от 2.00 до 3.00
+- Выбирай самые надёжные исходы с вероятностью прохода >70%
+- Предпочитай фаворитов (низкий коэф на П1 или П2) или Двойной шанс
+- Каждый коэффициент максимум 2.00`
 
-    const prompt = `Ты — эксперт по ставкам на спорт. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс из РЕАЛЬНОГО расписания на ${actualDate}.
+  const prompt = `Ты — эксперт по ставкам на спорт. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс на ${targetDate}.
 
-РЕАЛЬНЫЕ МАТЧИ С КОЭФФИЦИЕНТАМИ НА ${actualDate}:
+МАТЧИ С КОЭФФИЦИЕНТАМИ FONBET НА ${targetDate}:
 ${matchBlocks}
 
 Требования:
 - Выбирай ТОЛЬКО из матчей выше
-- Для каждого пика ОБЯЗАТЕЛЬНО используй РЕАЛЬНЫЙ коэффициент из списка выше
-- В поле "odds" ставь ТОЧНОЕ число из списка коэффициентов
+- В поле "odds" ставь ТОЧНОЕ число из коэффициентов выше (П1, X или П2)
+- В поле "prediction" пиши ставку по-русски: "Победа хозяев (П1)", "Ничья (X)", "Победа гостей (П2)", "Двойной шанс (1X)", "Двойной шанс (X2)"
+- Для Двойного шанса 1X используй коэф П1, для X2 — коэф П2 (ближайший)
 - Поля home/away/league — ТОЧНО как в списке выше
 - ВСЕ текстовые поля — СТРОГО на русском языке
 ${oddsRequirement}
 
-${ODDS_TRANSLATION}
-
 Ответь ТОЛЬКО валидным JSON:
 {
-  "date": "${actualDate}",
+  "date": "${targetDate}",
   "picks": [
     {
       "home": "название из списка",
       "away": "название из списка",
       "league": "лига из списка",
-      "prediction": "Ставка на русском",
-      "odds": 1.55,
-      "reasoning": "Обоснование на русском 2-3 предложения: форма команд, статистика голов/пропусков, почему именно этот исход выигрышный."
+      "prediction": "Победа хозяев (П1)",
+      "odds": 1.65,
+      "reasoning": "2-3 предложения: почему этот исход надёжный, что говорят коэффициенты."
     }
   ],
-  "total_odds": 3.47,
+  "total_odds": 2.72,
   "summary": "Краткое описание экспресса на русском"
 }`
 
-    const content = await openAIRequest([
-      { role: 'system', content: 'Ты эксперт по ставкам. Отвечай только валидным JSON на русском языке. Используй только реальные коэффициенты из предоставленного списка.' },
-      { role: 'user', content: prompt },
-    ])
+  const content = await openAIRequest([
+    { role: 'system', content: 'Ты эксперт по ставкам. Отвечай только валидным JSON на русском языке. Используй только коэффициенты из предоставленного списка.' },
+    { role: 'user', content: prompt },
+  ])
 
-    const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) throw new Error('Invalid JSON from OpenAI')
-    let data
-    try { data = JSON.parse(jsonMatch[0]) } catch { throw new Error('JSON parse failed') }
-    if (!data.picks || data.picks.length < 2) throw new Error('Not enough picks')
+  const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) throw new Error('Invalid JSON from OpenAI')
+  let data
+  try { data = JSON.parse(jsonMatch[0]) } catch { throw new Error('JSON parse failed') }
 
-    const total = data.picks.reduce((acc, p) => acc * (parseFloat(p.odds) || 1), 1)
-    data.total_odds = Math.round(total * 100) / 100
-    return data
-  }
+  const expectedPicks = isHigh ? 3 : 2
+  if (!data.picks || data.picks.length < expectedPicks) throw new Error('Not enough picks')
+  data.picks = data.picks.slice(0, expectedPicks)
 
-  // Нет реальных матчей в топ-лигах на эту дату
-  throw new Error(`Нет матчей в топ-лигах на ${targetDate}. Попробуйте перегенерировать позже.`)
+  const total = data.picks.reduce((acc, p) => acc * (parseFloat(p.odds) || 1), 1)
+  data.total_odds = Math.round(total * 100) / 100
+  return data
 }
 
 // ── GET /express/today ────────────────────────────────────────────────────────

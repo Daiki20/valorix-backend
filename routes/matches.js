@@ -2247,3 +2247,14 @@ router.get('/hockey-debug', (req, res) => {
 })
 
 module.exports = router
+module.exports.getFonbetFootballMatches = async function(targetDate) {
+  const events = await getFonbetSportEvents(FONBET_SPORT_IDS.football, 40)
+  return events
+    .filter(e => !e.isLive && e.rawDate && e.rawDate.slice(0, 10) === targetDate && e.odds1x2)
+    .map(e => ({
+      home:    e.home,
+      away:    e.away,
+      league:  e.league,
+      odds1x2: e.odds1x2,   // { home, draw, away }
+    }))
+}
