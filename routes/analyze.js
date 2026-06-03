@@ -4,7 +4,8 @@ const https = require('https')
 const { authenticate } = require('../middleware/auth')
 const db = require('../db')
 
-const CACHE_TTL      = 3 * 60 * 60 * 1000 // 3 hours — analysis cache
+const CACHE_TTL        = 3  * 60 * 60 * 1000  // 3 hours  — regular analysis cache
+const SEARCH_CACHE_TTL = 12 * 60 * 60 * 1000  // 12 hours — web search pre-match cache
 const TEAM_FORM_TTL  = 6 * 60 * 60 * 1000 // 6 hours — team form/h2h cache
 
 function cacheGet(key, ttl = CACHE_TTL) {
@@ -858,51 +859,85 @@ router.post('/football-form-allsports', authenticate, async (req, res) => {
 })
 
 // POST /analyze/match-with-search
-// Full AI analysis with real-time web search for ANY match (especially Fonbet)
-// gpt-4o-search-preview searches the web for team form, injuries, H2H, news
-// Cached 3 hours per match pair
+// POST /analyze/match-with-search
+// Pre-match: gpt-4o-search-preview, cached 12h
+// Live: gpt-4o-search-preview with live score/minute, NOT cached
 router.post('/match-with-search', authenticate, async (req, res) => {
-  const { home, away, league, date, odds1x2, sport = 'football' } = req.body || {}
+  const { home, away, league, date, odds1x2, sport = 'football', score, minute, isLive } = req.body || {}
   if (!home || !away) return res.status(400).json({ error: 'home/away required' })
 
-  const cacheKey = `wsearch_${(sport||'football')[0]}_${normalize(home)}_${normalize(away)}`
-  const cached = cacheGet(cacheKey, CACHE_TTL)
-  if (cached) {
-    try { return res.json(JSON.parse(cached)) } catch {}
+  const live = !!(isLive || score)
+  const year = new Date().getFullYear()
+
+  // Pre-match: check cache (12h)
+  const cacheKey = `wsearch_${(sport||'f')[0]}_${normalize(home)}_${normalize(away)}`
+  if (!live) {
+    const cached = cacheGet(cacheKey, SEARCH_CACHE_TTL)
+    if (cached) {
+      try { return res.json(JSON.parse(cached)) } catch {}
+    }
   }
 
   const oddsBlock = odds1x2
-    ? `Коэффициенты букмекера: П1 ${odds1x2.home} | X ${odds1x2.draw || '—'} | П2 ${odds1x2.away}`
+    ? `Коэффициенты: П1 ${odds1x2.home} | X ${odds1x2.draw || '—'} | П2 ${odds1x2.away}`
     : ''
-  const dateBlock = date ? `Дата матча: ${date}` : ''
-  const year = new Date().getFullYear()
 
-  const prompt = `Ты профессиональный спортивный аналитик. Тебе нужно проанализировать предстоящий матч.
+  const prompt = live
+    ? `Ты профессиональный спортивный аналитик. Матч ИДЁТ прямо сейчас.
 
 МАТЧ: ${home} vs ${away}
 ТУРНИР: ${league || 'не указан'}
-${dateBlock}
+🔴 ТЕКУЩИЙ СЧЁТ: ${score}${minute ? ` (${minute} мин)` : ''}
 ${oddsBlock}
 
-ЗАДАЧА: найди в интернете актуальную информацию об этих командах за ${year} год:
+ЗАДАЧА: найди в интернете:
+1. Что происходит в этом матче прямо сейчас — голы, карточки, замены
+2. Форму и стиль игры обеих команд
+3. Кто доминирует по ходу матча
+
+Сделай лайв-анализ: кто победит, сколько ещё голов ожидается.
+
+Ответь СТРОГО в JSON (без markdown):
+{
+  "verdict": "вердикт с учётом текущего счёта",
+  "summary": "3-4 предложения о ходе матча с реальными данными",
+  "confidence": число 50-90,
+  "risk": "low | medium | high",
+  "fairOdds": "справедливый коэф сейчас",
+  "bookOdds": null,
+  "value": 0,
+  "reasons": ["факт 1", "факт 2", "факт 3"],
+  "extraBets": [
+    {"type": "ставка", "confidence": число, "reason": "обоснование"},
+    {"type": "ставка", "confidence": число, "reason": "обоснование"}
+  ],
+  "bestOdds": [],
+  "dataWarning": null
+}`
+    : `Ты профессиональный спортивный аналитик. Проанализируй предстоящий матч.
+
+МАТЧ: ${home} vs ${away}
+ТУРНИР: ${league || 'не указан'}
+${date ? `Дата: ${date}` : ''}
+${oddsBlock}
+
+ЗАДАЧА: найди в интернете актуальную информацию за ${year} год:
 1. Последние 5-7 матчей ${home} — результаты, голы, форма
 2. Последние 5-7 матчей ${away} — результаты, голы, форма
-3. История очных встреч этих команд (последние 3-5 матчей)
-4. Текущие травмы и дисквалификации ключевых игроков
-5. Актуальные новости перед этим матчем
-
-На основе найденных данных сделай профессиональный анализ.
+3. История очных встреч (последние 3-5 матчей)
+4. Травмы и дисквалификации ключевых игроков
+5. Актуальные новости перед матчем
 
 Ответь СТРОГО в JSON (без markdown):
 {
   "verdict": "чёткий вердикт — победитель или исход",
-  "summary": "3-4 предложения с конкретными фактами из найденных данных",
+  "summary": "3-4 предложения с конкретными фактами из интернета",
   "confidence": число 50-90,
   "risk": "low | medium | high",
-  "fairOdds": "справедливый коэффициент на фаворита",
+  "fairOdds": "справедливый коэффициент",
   "bookOdds": "коэф букмекера если есть",
   "value": число или 0,
-  "reasons": ["факт 1 с цифрой из интернета", "факт 2", "факт 3", "факт 4"],
+  "reasons": ["факт 1 с цифрой", "факт 2", "факт 3", "факт 4"],
   "extraBets": [
     {"type": "название ставки", "confidence": число, "reason": "обоснование"},
     {"type": "название ставки", "confidence": число, "reason": "обоснование"},
@@ -914,38 +949,35 @@ ${oddsBlock}
 
   try {
     const raw = await callOpenAIWithWebSearch([
-      { role: 'system', content: 'Ты спортивный аналитик. Ищи реальные данные в интернете. Отвечай только JSON.' },
+      { role: 'system', content: 'Ты спортивный аналитик. Ищи реальные данные в интернете. Отвечай только JSON без markdown.' },
       { role: 'user', content: prompt },
     ])
 
     const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
     let analysis
-    try {
-      analysis = JSON.parse(cleaned)
-    } catch {
-      const match = raw.match(/\{[\s\S]*\}/)
-      analysis = match ? JSON.parse(match[0]) : null
-    }
+    try { analysis = JSON.parse(cleaned) }
+    catch { const m = raw.match(/\{[\s\S]*\}/); analysis = m ? JSON.parse(m[0]) : null }
 
     if (!analysis) return res.status(500).json({ error: 'Parse failed' })
 
     const result = {
-      verdict:     analysis.verdict     || `Победа ${home}`,
-      summary:     analysis.summary     || '',
-      confidence:  Math.min(90, Math.max(50, Number(analysis.confidence) || 65)),
-      risk:        analysis.risk        || 'medium',
-      fairOdds:    analysis.fairOdds    || '—',
-      bookOdds:    analysis.bookOdds    || null,
-      value:       Number(analysis.value) || 0,
-      reasons:     Array.isArray(analysis.reasons)   ? analysis.reasons   : [],
-      extraBets:   Array.isArray(analysis.extraBets) ? analysis.extraBets : [],
-      bestOdds:    [],
+      verdict:    analysis.verdict    || `Победа ${home}`,
+      summary:    analysis.summary    || '',
+      confidence: Math.min(90, Math.max(50, Number(analysis.confidence) || 65)),
+      risk:       analysis.risk       || 'medium',
+      fairOdds:   analysis.fairOdds   || '—',
+      bookOdds:   analysis.bookOdds   || null,
+      value:      Number(analysis.value) || 0,
+      reasons:    Array.isArray(analysis.reasons)   ? analysis.reasons   : [],
+      extraBets:  Array.isArray(analysis.extraBets) ? analysis.extraBets : [],
+      bestOdds:   [],
       dataWarning: analysis.dataWarning || null,
-      searchUsed:  true,
+      searchUsed: true,
     }
 
-    cacheSet(cacheKey, JSON.stringify(result))
-    console.log(`[match-with-search] ${home} vs ${away}: verdict="${result.verdict}", conf=${result.confidence}`)
+    // Cache only pre-match results
+    if (!live) cacheSet(cacheKey, JSON.stringify(result))
+    console.log(`[match-with-search] ${live ? '🔴 LIVE' : '📅 PRE'} ${home} vs ${away}: "${result.verdict}" conf=${result.confidence}`)
     res.json(result)
 
   } catch (err) {
