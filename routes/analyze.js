@@ -646,6 +646,169 @@ router.post('/team-form', authenticate, async (req, res) => {
   }
 })
 
+// ── AllSports Football form + H2H (covers all leagues Fonbet has) ────────────
+const ALLSPORTS_FOOTBALL_TTL = 12 * 60 * 60 * 1000 // 12 hours
+
+// Russian national team names → English (for AllSports search)
+const RU_TO_EN_TEAMS = {
+  'россия':'Russia','германия':'Germany','франция':'France','испания':'Spain',
+  'англия':'England','италия':'Italy','португалия':'Portugal','нидерланды':'Netherlands',
+  'бельгия':'Belgium','хорватия':'Croatia','дания':'Denmark','швеция':'Sweden',
+  'норвегия':'Norway','швейцария':'Switzerland','австрия':'Austria','польша':'Poland',
+  'чехия':'Czech Republic','сербия':'Serbia','греция':'Greece','турция':'Turkey',
+  'украина':'Ukraine','румыния':'Romania','венгрия':'Hungary','словакия':'Slovakia',
+  'финляндия':'Finland','шотландия':'Scotland','уэльс':'Wales','ирландия':'Ireland',
+  'бразилия':'Brazil','аргентина':'Argentina','уругвай':'Uruguay','чили':'Chile',
+  'колумбия':'Colombia','мексика':'Mexico','сша':'USA','канада':'Canada',
+  'япония':'Japan','южная корея':'South Korea','австралия':'Australia',
+  'египет':'Egypt','марокко':'Morocco','сенегал':'Senegal','нигерия':'Nigeria',
+  'камерун':'Cameroon','гана':'Ghana','алжир':'Algeria','тунис':'Tunisia',
+  'иран':'Iran','саудовская аравия':'Saudi Arabia','катар':'Qatar',
+  'дания':'Denmark','польша':'Poland','венгрия':'Hungary',
+  'гаити':'Haiti','новая зеландия':'New Zealand','н.зеландия':'New Zealand',
+  'гибралтар':'Gibraltar','филиппины':'Philippines','гуам':'Guam',
+  'албания':'Albania','израиль':'Israel','конго':'Congo','др конго':'DR Congo',
+  'нигерия':'Nigeria','эквадор':'Ecuador','парагвай':'Paraguay','боливия':'Bolivia',
+  'перу':'Peru','венесуэла':'Venezuela','коста-рика':'Costa Rica','панама':'Panama',
+  'ямайка':'Jamaica','куба':'Cuba','гондурас':'Honduras','сальвадор':'El Salvador',
+}
+
+function translateTeamToEn(name) {
+  const key = (name || '').toLowerCase().trim()
+  return RU_TO_EN_TEAMS[key] || name
+}
+
+function parseAllSportsFixtures(fixtures, teamKey) {
+  const finished = (fixtures || [])
+    .filter(f => f.event_status === 'Finished' || (f.event_final_result && f.event_final_result !== '? - ?'))
+    .slice(0, 10)
+
+  if (!finished.length) return null
+
+  let wins = 0, draws = 0, loses = 0, goalsFor = 0, goalsAgainst = 0
+
+  for (const f of finished) {
+    const parts = (f.event_final_result || '').split('-').map(s => parseInt(s.trim()))
+    if (parts.length < 2 || isNaN(parts[0]) || isNaN(parts[1])) continue
+    const isHome = String(f.home_team_key || f.event_home_team_id) === String(teamKey)
+    const myGoals = isHome ? parts[0] : parts[1]
+    const theirGoals = isHome ? parts[1] : parts[0]
+    goalsFor += myGoals
+    goalsAgainst += theirGoals
+    if (myGoals > theirGoals) wins++
+    else if (myGoals === theirGoals) draws++
+    else loses++
+  }
+
+  const count = wins + draws + loses
+  if (!count) return null
+  return {
+    wins, draws, loses,
+    gamesCount: count,
+    avgScore:    +(goalsFor    / count).toFixed(2),
+    avgConceded: +(goalsAgainst / count).toFixed(2),
+  }
+}
+
+function parseAllSportsH2H(h2hData) {
+  const raw = h2hData?.result || {}
+  const matches = [
+    ...(Array.isArray(raw.H2H) ? raw.H2H : []),
+    ...(Array.isArray(raw.firstTeamResults)  ? raw.firstTeamResults.slice(0,3)  : []),
+    ...(Array.isArray(raw.secondTeamResults) ? raw.secondTeamResults.slice(0,3) : []),
+  ]
+  return matches
+    .filter(f => f.event_final_result && f.event_final_result !== '? - ?')
+    .slice(0, 8)
+    .map(f => {
+      const parts = (f.event_final_result || '').split('-').map(s => parseInt(s.trim()))
+      return {
+        homeTeam:  { name: f.event_home_team || '?' },
+        awayTeam:  { name: f.event_away_team || '?' },
+        homeScore: isNaN(parts[0]) ? '?' : parts[0],
+        awayScore: isNaN(parts[1]) ? '?' : parts[1],
+        date:      (f.event_date || '').slice(0, 10),
+      }
+    })
+}
+
+// POST /analyze/football-form-allsports
+// Fetches form + H2H from AllSports for ANY football match (covers all Fonbet leagues)
+// Cached 12 hours per team pair
+router.post('/football-form-allsports', authenticate, async (req, res) => {
+  const { home, away } = req.body || {}
+  if (!home || !away) return res.json({ homeForm: null, awayForm: null, h2h: [] })
+  if (!process.env.RAPIDAPI_KEY) return res.json({ homeForm: null, awayForm: null, h2h: [] })
+
+  const cacheKey = `asfb_${normalize(home)}_${normalize(away)}`
+  const cached = cacheGet(cacheKey, ALLSPORTS_FOOTBALL_TTL)
+  if (cached) {
+    try { return res.json(JSON.parse(cached)) } catch {}
+  }
+
+  try {
+    const normName = s => (s || '').toLowerCase().replace(/[^a-zа-яё0-9]/gi, '')
+
+    // Search team: try Russian name first, then English translation
+    async function searchTeam(name) {
+      const enName = translateTeamToEn(name)
+      const queries = enName !== name ? [name, enName] : [name]
+      for (const q of queries) {
+        try {
+          const res = await allSportsGet('football', `met=Teams&teamName=${encodeURIComponent(q)}`)
+          const teams = res?.result || []
+          if (!teams.length) continue
+          const qn = normName(q)
+          const found = teams.find(t => {
+            const n = normName(t.team_name || '')
+            return n === qn || n.includes(qn) || qn.includes(n)
+          }) || teams[0]
+          if (found) return found
+        } catch { continue }
+      }
+      return null
+    }
+
+    const [homeTeam, awayTeam] = await Promise.all([
+      searchTeam(home),
+      searchTeam(away),
+    ])
+
+    const today = new Date()
+    const from = new Date(today - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+    const to   = today.toISOString().slice(0, 10)
+
+    const [homeFixRes, awayFixRes, h2hRes] = await Promise.allSettled([
+      homeTeam ? allSportsGet('football', `met=Fixtures&teamId=${homeTeam.team_key}&from=${from}&to=${to}`) : Promise.resolve({ result: [] }),
+      awayTeam ? allSportsGet('football', `met=Fixtures&teamId=${awayTeam.team_key}&from=${from}&to=${to}`) : Promise.resolve({ result: [] }),
+      (homeTeam && awayTeam)
+        ? allSportsGet('football', `met=H2H&firstTeamId=${homeTeam.team_key}&secondTeamId=${awayTeam.team_key}`)
+        : Promise.resolve({ result: {} }),
+    ])
+
+    const homeFixtures = homeFixRes.status === 'fulfilled' ? (homeFixRes.value?.result || []) : []
+    const awayFixtures = awayFixRes.status === 'fulfilled' ? (awayFixRes.value?.result || []) : []
+    const h2hData      = h2hRes.status   === 'fulfilled' ? h2hRes.value : null
+
+    const result = {
+      homeForm: parseAllSportsFixtures(homeFixtures, homeTeam?.team_key),
+      awayForm: parseAllSportsFixtures(awayFixtures, awayTeam?.team_key),
+      h2h:      parseAllSportsH2H(h2hData),
+      source:   'allsports',
+      homeTeamFound: !!homeTeam,
+      awayTeamFound: !!awayTeam,
+    }
+
+    cacheSet(cacheKey, JSON.stringify(result))
+    console.log(`[allsports-football] ${home} vs ${away}: home=${!!result.homeForm}, away=${!!result.awayForm}, h2h=${result.h2h.length}`)
+    res.json(result)
+
+  } catch (err) {
+    console.error('[allsports-football]', err.message)
+    res.json({ homeForm: null, awayForm: null, h2h: [] })
+  }
+})
+
 // ── BallDontLie universal sport support ───────────────────────────────────────
 
 // Season calculation per sport
