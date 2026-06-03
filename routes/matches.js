@@ -2248,13 +2248,44 @@ router.get('/hockey-debug', (req, res) => {
 
 module.exports = router
 module.exports.getFonbetFootballMatches = async function(targetDate) {
-  const events = await getFonbetSportEvents(FONBET_SPORT_IDS.football, 40)
-  return events
-    .filter(e => !e.isLive && e.rawDate && e.rawDate.slice(0, 10) === targetDate && e.odds1x2)
-    .map(e => ({
-      home:    e.home,
-      away:    e.away,
-      league:  e.league,
-      odds1x2: e.odds1x2,   // { home, draw, away }
-    }))
+  // Get full Fonbet data (cached) to extract extended markets
+  const { data, tree, leagueNames } = await getFonbetData()
+
+  // Build extended factors map: eventId → all useful markets
+  const extFactorsMap = {}
+  for (const cf of (data.customFactors || [])) {
+    const f = {}
+    for (const factor of (cf.factors || [])) f[factor.f] = factor.v
+    if (!f[921] && !f[923]) continue  // skip non-football or missing main odds
+    extFactorsMap[cf.e] = {
+      home:  f[921] || null,   // П1
+      draw:  f[922] || null,   // X
+      away:  f[923] || null,   // П2
+      dc1x:  f[924] || null,   // Двойной шанс 1X
+      dcx2:  f[925] || null,   // Двойной шанс X2
+      tb25:  f[927] || null,   // ТБ 2.5
+      tm25:  f[928] || null,   // ТМ 2.5
+      tb35:  f[930] || null,   // ТБ 3.5
+      tm35:  f[931] || null,   // ТМ 3.5
+    }
+  }
+
+  const tomorrow = targetDate
+  return (data.events || [])
+    .filter(e =>
+      e.level === 1 && e.team1 && e.team2 &&
+      tree[e.sportId] === FONBET_SPORT_IDS.football &&
+      e.place !== 'live' &&
+      e.startTime && new Date(e.startTime * 1000).toISOString().slice(0, 10) === tomorrow &&
+      extFactorsMap[e.id]?.home
+    )
+    .map(e => {
+      const league = leagueNames[e.sportId] || ''
+      const score  = getLeagueScore('football', league)
+      return { home: e.team1, away: e.team2, league, score, markets: extFactorsMap[e.id] }
+    })
+    .filter(e => hasDataCoverage('football', e.league))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 12)
+    .map(({ home, away, league, markets }) => ({ home, away, league, markets }))
 }
