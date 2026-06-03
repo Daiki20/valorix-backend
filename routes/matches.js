@@ -283,35 +283,30 @@ function getLeagueScore(sport, leagueName) {
     // Virtual/esports football (FC 24, FC 26, ESports Battle, Volta) — always filter out
     if (/esports.?battle|volta\s+champions|fc\s*2[456]|fifa\s+\d+|virtual.*football|\befc\b/i.test(l)) return 0
 
-    if (/лига чемпионов|champions league|лч ucl/.test(l))               return 1000
-    if (/лига европы|europa league|лe uel/.test(l))                     return 950
-    if (/конференц.лига|conference league/.test(l))                      return 900
-    if (/товарищ.*сборн|топ\s+сборн|international.*friendly|nations league/i.test(l)) return 880
-    if (/англия.*премьер|premier league|апл/.test(l))                    return 850
-    // La Liga: must mention spain to avoid matching Bolivia's "Primera Division"
-    if (/испания.*ла лига|испания.*примера|la liga\b/.test(l))           return 840
-    if (/германия.*бундеслига[^2]|бундеслига[^2]/.test(l))              return 830
-    if (/италия.*серия а[^б]|serie a/.test(l))                           return 820
-    if (/франция.*лига 1|ligue 1/.test(l))                               return 810
-    if (/россия.*рпл|рпл|российская премьер|tnf|тинькофф рпл/.test(l))  return 800
-    if (/португалия.*примейра|primeira liga/.test(l))                    return 780
-    if (/нидерланды.*эредивизи|eredivisie/.test(l))                      return 760
-    if (/турция.*суперлига|süper lig|турецкая суперлига/.test(l))        return 750
-    if (/бельгия.*прем|шотландия.*прем|греция.*суперлига/.test(l))      return 720
-    if (/украина.*прем/.test(l))                                          return 710
-    // Major cups only (country-specific)
-    if (/испания.*куп|копа дель рей|fa cup|dfb.?pokal|coppa italia|coupe de france/.test(l)) return 700
-    if (/кубок рос|кубок укра|кубок беларус|кубок польш/.test(l))       return 680
-    if (/португалия.*куп|taça de portugal/.test(l))                      return 670
-    if (/копа.*либертад|libertadores/.test(l))                           return 700
-    if (/копа.*судамер|sudamericana/.test(l))                            return 650
-    if (/бразилия.*серия а|серия а.*бразил|brasileirao/.test(l))        return 680
-    // Argentina: only top division (not reserve/B leagues)
-    if (/аргентина.*примера\s+дивис|аргентина.*примера\s+насьон/.test(l)) return 660
+    if (/лига чемпионов|champions league/.test(l))                         return 1000
+    if (/лига европы|europa league/.test(l))                              return 950
+    if (/конференц.лига|conference league/.test(l))                       return 900
+    if (/товарищ|\bсборн|international.*friendly|nations league/i.test(l)) return 880
+    if (/англия.*премьер|premier league|апл/.test(l))                     return 850
+    if (/ла\s+лига|la liga/.test(l))                                      return 840
+    if (/бундеслига(?!.*2)/.test(l))                                      return 830
+    if (/серия\s+а(?!р)|serie\s+a(?!2)/i.test(l))                        return 820
+    if (/лига\s+1|ligue\s+1/.test(l))                                     return 810
+    if (/рпл|российская премьер|тинькофф рпл/.test(l))                   return 800
+    if (/примейра|primeira liga/.test(l))                                 return 780
+    if (/эредивизи|eredivisie/.test(l))                                   return 760
+    if (/суперлига|süper lig/.test(l))                                    return 750
+    if (/про\s+лига|premier.*бельг|jupiler|шотл.*прем|scottish.*prem/.test(l)) return 720
+    if (/укра.*прем|украин.*прем/.test(l))                                return 710
+    if (/копа дель рей|fa cup|dfb.?pokal|coppa italia|coupe de france/.test(l)) return 700
+    if (/кубок рос|кубок укра|кубок беларус/.test(l))                    return 680
+    if (/копа.*либертад|libertadores/.test(l))                            return 700
+    if (/копа.*судамер|sudamericana/.test(l))                             return 650
+    if (/brasileirao|бразил.*серия а/.test(l))                           return 680
+    if (/аргентина.*примера|примера насьональ/.test(l))                   return 660
     if (/млс|mls|лига мекс|liga mx/.test(l))                             return 600
-    if (/бундеслига 2|серия б|лига 2|чемпионшип/.test(l))               return 400
-    if (/третья|3.* дивизион|третий/.test(l))                            return 200
-    return 50   // unknown league — filtered out by hasDataCoverage (requires > 50)
+    if (/бундеслига 2|серия б|лига 2|чемпионшип/.test(l))                return 400
+    return 50   // unknown/minor — filtered out (requires score > 50)
   }
 
   if (sport === 'hockey') {
@@ -466,7 +461,7 @@ async function getFonbetSportEvents(rootSportId, limit = 20) {
 // GET /matches/football — Fonbet football (Line + Live with odds)
 router.get('/football', async (req, res) => {
   try {
-    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.football, 20)
+    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.football, 40)
     console.log(`[matches/football] Fonbet: ${games.length} games`)
     res.json({ data: games })
   } catch (err) {
