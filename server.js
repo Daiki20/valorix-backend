@@ -25,6 +25,7 @@ const shareRoutes = require('./routes/share')
 const expressRoutes = require('./routes/express')
 const matchesRoutes = require('./routes/matches')
 const blogRoutes = require('./routes/blog')
+const uploadRoutes = require('./routes/upload')
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -96,6 +97,17 @@ app.use('/share', shareRoutes)
 app.use('/express', expressRoutes)
 app.use('/matches', matchesRoutes)
 app.use('/blog', blogRoutes)
+app.use('/upload', uploadRoutes)
+
+// ── GET /images/:id/:filename — serve uploaded images from SQLite ─────────
+app.get('/images/:id/:filename', (req, res) => {
+  const db = require('./db')
+  const row = db.prepare('SELECT data, mimetype FROM uploaded_images WHERE id = ?').get(parseInt(req.params.id))
+  if (!row) return res.status(404).json({ error: 'Изображение не найдено' })
+  res.set('Content-Type', row.mimetype)
+  res.set('Cache-Control', 'public, max-age=31536000, immutable')
+  res.send(row.data)
+})
 
 // Sitemap.xml — помогает Google находить все статьи
 app.get('/sitemap.xml', (req, res) => {
