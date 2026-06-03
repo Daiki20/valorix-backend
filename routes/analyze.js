@@ -733,78 +733,86 @@ function parseAllSportsH2H(h2hData) {
 }
 
 // POST /analyze/football-form-allsports
-// Fetches form + H2H from AllSports for ANY football match (covers all Fonbet leagues)
+// Searches sstats by team name → fetches form + H2H for ANY football match
+// Works for Fonbet matches that don't have a sstats match ID
 // Cached 12 hours per team pair
 router.post('/football-form-allsports', authenticate, async (req, res) => {
   const { home, away } = req.body || {}
   if (!home || !away) return res.json({ homeForm: null, awayForm: null, h2h: [] })
-  if (!process.env.RAPIDAPI_KEY) return res.json({ homeForm: null, awayForm: null, h2h: [] })
+  if (!process.env.SSTATS_API_KEY) return res.json({ homeForm: null, awayForm: null, h2h: [] })
 
-  const cacheKey = `asfb_${normalize(home)}_${normalize(away)}`
+  const cacheKey = `ssfb_${normalize(home)}_${normalize(away)}`
   const cached = cacheGet(cacheKey, ALLSPORTS_FOOTBALL_TTL)
   if (cached) {
     try { return res.json(JSON.parse(cached)) } catch {}
   }
 
   try {
-    const normName = s => (s || '').toLowerCase().replace(/[^a-zа-яё0-9]/gi, '')
+    // Search sstats for team IDs by name (supports Russian + English)
+    const enHome = translateTeamToEn(home)
+    const enAway = translateTeamToEn(away)
 
-    // Search team: try Russian name first, then English translation
-    async function searchTeam(name) {
-      const enName = translateTeamToEn(name)
-      const queries = enName !== name ? [name, enName] : [name]
-      for (const q of queries) {
-        try {
-          const res = await allSportsGet('football', `met=Teams&teamName=${encodeURIComponent(q)}`)
-          const teams = res?.result || []
-          if (!teams.length) continue
-          const qn = normName(q)
-          const found = teams.find(t => {
-            const n = normName(t.team_name || '')
-            return n === qn || n.includes(qn) || qn.includes(n)
-          }) || teams[0]
-          if (found) return found
-        } catch { continue }
-      }
-      return null
+    const [homeRes, awayRes] = await Promise.allSettled([
+      sstatsBackendGet('/Teams/list', { name: enHome !== home ? enHome : home, limit: 3 }),
+      sstatsBackendGet('/Teams/list', { name: enAway !== away ? enAway : away, limit: 3 }),
+    ])
+
+    const normStr = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+    const pickTeam = (res, query) => {
+      const teams = res.status === 'fulfilled' ? (res.value?.data || []) : []
+      const q = normStr(query)
+      return teams.find(t => {
+        const n = normStr(t.name || '')
+        return n === q || n.includes(q) || q.includes(n)
+      }) || teams[0] || null
     }
 
-    const [homeTeam, awayTeam] = await Promise.all([
-      searchTeam(home),
-      searchTeam(away),
+    const homeTeam = pickTeam(homeRes, enHome !== home ? enHome : home)
+    const awayTeam = pickTeam(awayRes, enAway !== away ? enAway : away)
+
+    if (!homeTeam && !awayTeam) {
+      const empty = { homeForm: null, awayForm: null, h2h: [], source: 'sstats', homeTeamFound: false, awayTeamFound: false }
+      cacheSet(cacheKey, JSON.stringify(empty))
+      console.log(`[football-form] ${home} vs ${away}: teams not found in sstats`)
+      return res.json(empty)
+    }
+
+    const homeId = homeTeam?.id
+    const awayId = awayTeam?.id
+
+    const [homeGamesRes, awayGamesRes, h2hRes] = await Promise.allSettled([
+      homeId ? sstatsBackendGet('/Games/list', { ended: true, team: homeId, limit: 15 }) : Promise.resolve({ data: [] }),
+      awayId ? sstatsBackendGet('/Games/list', { ended: true, team: awayId, limit: 15 }) : Promise.resolve({ data: [] }),
+      (homeId && awayId)
+        ? sstatsBackendGet('/Games/list', { ended: true, bothTeams: `${homeId},${awayId}`, limit: 8 })
+        : Promise.resolve({ data: [] }),
     ])
 
-    const today = new Date()
-    const from = new Date(today - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-    const to   = today.toISOString().slice(0, 10)
-
-    const [homeFixRes, awayFixRes, h2hRes] = await Promise.allSettled([
-      homeTeam ? allSportsGet('football', `met=Fixtures&teamId=${homeTeam.team_key}&from=${from}&to=${to}`) : Promise.resolve({ result: [] }),
-      awayTeam ? allSportsGet('football', `met=Fixtures&teamId=${awayTeam.team_key}&from=${from}&to=${to}`) : Promise.resolve({ result: [] }),
-      (homeTeam && awayTeam)
-        ? allSportsGet('football', `met=H2H&firstTeamId=${homeTeam.team_key}&secondTeamId=${awayTeam.team_key}`)
-        : Promise.resolve({ result: {} }),
-    ])
-
-    const homeFixtures = homeFixRes.status === 'fulfilled' ? (homeFixRes.value?.result || []) : []
-    const awayFixtures = awayFixRes.status === 'fulfilled' ? (awayFixRes.value?.result || []) : []
-    const h2hData      = h2hRes.status   === 'fulfilled' ? h2hRes.value : null
+    const homeGames = homeGamesRes.status === 'fulfilled' ? (homeGamesRes.value?.data || []) : []
+    const awayGames = awayGamesRes.status === 'fulfilled' ? (awayGamesRes.value?.data || []) : []
+    const h2hGames  = h2hRes.status === 'fulfilled' ? (h2hRes.value?.data || []) : []
 
     const result = {
-      homeForm: parseAllSportsFixtures(homeFixtures, homeTeam?.team_key),
-      awayForm: parseAllSportsFixtures(awayFixtures, awayTeam?.team_key),
-      h2h:      parseAllSportsH2H(h2hData),
-      source:   'allsports',
+      homeForm: computeFormStats(homeGames, homeId, 'home'),
+      awayForm: computeFormStats(awayGames, awayId, 'away'),
+      h2h: h2hGames.slice(0, 8).map(g => ({
+        homeTeam:  { name: g.homeTeam?.name || '?' },
+        awayTeam:  { name: g.awayTeam?.name || '?' },
+        homeScore: g.homeFTResult ?? g.homeGoals ?? '?',
+        awayScore: g.awayFTResult ?? g.awayGoals ?? '?',
+        date:      (g.date || '').slice(0, 10),
+      })),
+      source: 'sstats',
       homeTeamFound: !!homeTeam,
       awayTeamFound: !!awayTeam,
     }
 
     cacheSet(cacheKey, JSON.stringify(result))
-    console.log(`[allsports-football] ${home} vs ${away}: home=${!!result.homeForm}, away=${!!result.awayForm}, h2h=${result.h2h.length}`)
+    console.log(`[football-form] ${home} vs ${away}: home=${!!result.homeForm}, away=${!!result.awayForm}, h2h=${result.h2h.length}`)
     res.json(result)
 
   } catch (err) {
-    console.error('[allsports-football]', err.message)
+    console.error('[football-form]', err.message)
     res.json({ homeForm: null, awayForm: null, h2h: [] })
   }
 })
