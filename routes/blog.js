@@ -299,9 +299,14 @@ ${date ? `Дата: ${date}` : ''}
 
     // ── Шаг 2: генерируем статью с реальным вердиктом ────────────────────────
     const verdictLine = aiVerdict || '[определи по контексту]'
+    const maskBet = (text) => {
+      const words = (text || '').split(' ')
+      const first = words[0] || 'Ставка'
+      return `${first}${'*'.repeat(Math.max(10, 20 - first.length))}`
+    }
     const lockedBets = aiExtraBets.length > 0
-      ? aiExtraBets.map(b => `   🔒 ${b.type}: *** *(узнать полный анализ на Valorix)*`).join('\n')
-      : `   🔒 Тотал: *** *(узнать полный анализ на Valorix)*\n   🔒 Дополнительная ставка: *** *(узнать полный анализ на Valorix)*`
+      ? aiExtraBets.map(b => `   🔒 ${maskBet(b.type)}`).join('\n')
+      : `   🔒 Тотал********************\n   🔒 Ставка*******************`
 
     const reasonsBlock = aiReasons.length > 0
       ? `\nКлючевые факты из анализа:\n${aiReasons.map(r => `- ${r}`).join('\n')}` : ''
