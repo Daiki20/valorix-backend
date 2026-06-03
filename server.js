@@ -54,6 +54,7 @@ app.use(helmet({
 }))
 
 app.use('/analyze', express.json({ limit: '20mb' }))
+app.use('/upload',  express.json({ limit: '10mb' }))
 app.use(express.json({ limit: '10kb' }))
 
 // ── Rate limiters ─────────────────────────────────────────
