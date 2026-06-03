@@ -29,6 +29,46 @@ function cacheSet(key, val) {
 
 const RAPIDAPI_HOST = 'free-api-live-football-data.p.rapidapi.com'
 
+// gpt-4o-search-preview — поиск в интернете перед ответом
+function callOpenAIWithWebSearch(messages, max_tokens = 2000) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify({
+      model: 'gpt-4o-search-preview',
+      messages,
+      max_tokens,
+      web_search_options: { search_context_size: 'medium' },
+    })
+    const options = {
+      hostname: 'api.openai.com',
+      path: '/v1/chat/completions',
+      method: 'POST',
+      timeout: 45000,
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+    }
+    const req = https.request(options, (res) => {
+      let data = ''
+      res.on('data', chunk => { data += chunk })
+      res.on('end', () => {
+        if (res.statusCode !== 200) { reject(new Error(`OpenAI search ${res.statusCode}: ${data}`)); return }
+        try {
+          const parsed = JSON.parse(data)
+          const content = parsed?.choices?.[0]?.message?.content
+          if (!content) throw new Error('Empty response')
+          resolve(content)
+        } catch { reject(new Error('OpenAI search parse error')) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('OpenAI search timeout')) })
+    req.write(payload)
+    req.end()
+  })
+}
+
 function callOpenAI(messages, max_tokens = 1500) {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
@@ -814,6 +854,103 @@ router.post('/football-form-allsports', authenticate, async (req, res) => {
   } catch (err) {
     console.error('[football-form]', err.message)
     res.json({ homeForm: null, awayForm: null, h2h: [] })
+  }
+})
+
+// POST /analyze/match-with-search
+// Full AI analysis with real-time web search for ANY match (especially Fonbet)
+// gpt-4o-search-preview searches the web for team form, injuries, H2H, news
+// Cached 3 hours per match pair
+router.post('/match-with-search', authenticate, async (req, res) => {
+  const { home, away, league, date, odds1x2, sport = 'football' } = req.body || {}
+  if (!home || !away) return res.status(400).json({ error: 'home/away required' })
+
+  const cacheKey = `wsearch_${(sport||'football')[0]}_${normalize(home)}_${normalize(away)}`
+  const cached = cacheGet(cacheKey, CACHE_TTL)
+  if (cached) {
+    try { return res.json(JSON.parse(cached)) } catch {}
+  }
+
+  const oddsBlock = odds1x2
+    ? `Коэффициенты букмекера: П1 ${odds1x2.home} | X ${odds1x2.draw || '—'} | П2 ${odds1x2.away}`
+    : ''
+  const dateBlock = date ? `Дата матча: ${date}` : ''
+  const year = new Date().getFullYear()
+
+  const prompt = `Ты профессиональный спортивный аналитик. Тебе нужно проанализировать предстоящий матч.
+
+МАТЧ: ${home} vs ${away}
+ТУРНИР: ${league || 'не указан'}
+${dateBlock}
+${oddsBlock}
+
+ЗАДАЧА: найди в интернете актуальную информацию об этих командах за ${year} год:
+1. Последние 5-7 матчей ${home} — результаты, голы, форма
+2. Последние 5-7 матчей ${away} — результаты, голы, форма
+3. История очных встреч этих команд (последние 3-5 матчей)
+4. Текущие травмы и дисквалификации ключевых игроков
+5. Актуальные новости перед этим матчем
+
+На основе найденных данных сделай профессиональный анализ.
+
+Ответь СТРОГО в JSON (без markdown):
+{
+  "verdict": "чёткий вердикт — победитель или исход",
+  "summary": "3-4 предложения с конкретными фактами из найденных данных",
+  "confidence": число 50-90,
+  "risk": "low | medium | high",
+  "fairOdds": "справедливый коэффициент на фаворита",
+  "bookOdds": "коэф букмекера если есть",
+  "value": число или 0,
+  "reasons": ["факт 1 с цифрой из интернета", "факт 2", "факт 3", "факт 4"],
+  "extraBets": [
+    {"type": "название ставки", "confidence": число, "reason": "обоснование"},
+    {"type": "название ставки", "confidence": число, "reason": "обоснование"},
+    {"type": "название ставки", "confidence": число, "reason": "обоснование"}
+  ],
+  "bestOdds": [],
+  "dataWarning": null
+}`
+
+  try {
+    const raw = await callOpenAIWithWebSearch([
+      { role: 'system', content: 'Ты спортивный аналитик. Ищи реальные данные в интернете. Отвечай только JSON.' },
+      { role: 'user', content: prompt },
+    ])
+
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
+    let analysis
+    try {
+      analysis = JSON.parse(cleaned)
+    } catch {
+      const match = raw.match(/\{[\s\S]*\}/)
+      analysis = match ? JSON.parse(match[0]) : null
+    }
+
+    if (!analysis) return res.status(500).json({ error: 'Parse failed' })
+
+    const result = {
+      verdict:     analysis.verdict     || `Победа ${home}`,
+      summary:     analysis.summary     || '',
+      confidence:  Math.min(90, Math.max(50, Number(analysis.confidence) || 65)),
+      risk:        analysis.risk        || 'medium',
+      fairOdds:    analysis.fairOdds    || '—',
+      bookOdds:    analysis.bookOdds    || null,
+      value:       Number(analysis.value) || 0,
+      reasons:     Array.isArray(analysis.reasons)   ? analysis.reasons   : [],
+      extraBets:   Array.isArray(analysis.extraBets) ? analysis.extraBets : [],
+      bestOdds:    [],
+      dataWarning: analysis.dataWarning || null,
+      searchUsed:  true,
+    }
+
+    cacheSet(cacheKey, JSON.stringify(result))
+    console.log(`[match-with-search] ${home} vs ${away}: verdict="${result.verdict}", conf=${result.confidence}`)
+    res.json(result)
+
+  } catch (err) {
+    console.error('[match-with-search]', err.message)
+    res.status(500).json({ error: err.message })
   }
 })
 
