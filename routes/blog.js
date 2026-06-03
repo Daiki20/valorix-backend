@@ -6,6 +6,62 @@ const { authenticate } = require('../middleware/auth')
 
 // ── Helpers for article generation ───────────────────────────────────────────
 
+const SEARCH_CACHE_TTL = 12 * 60 * 60 * 1000 // 12 hours
+
+function normalize(s) { return (s || '').toLowerCase().replace(/[^a-zа-яё0-9]/gi, '') }
+
+function blogCacheGet(key, ttl = SEARCH_CACHE_TTL) {
+  try {
+    const row = db.prepare('SELECT content, created_at FROM analysis_cache WHERE cache_key = ?').get(key)
+    if (!row) return null
+    if (Date.now() - row.created_at > ttl) { db.prepare('DELETE FROM analysis_cache WHERE cache_key = ?').run(key); return null }
+    return row.content
+  } catch { return null }
+}
+
+function blogCacheSet(key, val) {
+  try {
+    db.prepare('INSERT OR REPLACE INTO analysis_cache (cache_key, content, created_at) VALUES (?, ?, ?)').run(key, val, Date.now())
+  } catch {}
+}
+
+function callOpenAIWithWebSearch(messages, max_tokens = 2000) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify({
+      model: 'gpt-4o-search-preview',
+      messages,
+      max_tokens,
+      web_search_options: { search_context_size: 'medium' },
+    })
+    const options = {
+      hostname: 'api.openai.com',
+      path: '/v1/chat/completions',
+      method: 'POST',
+      timeout: 45000,
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => {
+        if (res.statusCode !== 200) { reject(new Error(`OpenAI ${res.statusCode}`)); return }
+        try {
+          const p = JSON.parse(data)
+          resolve(p?.choices?.[0]?.message?.content || '')
+        } catch { reject(new Error('parse error')) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    req.write(payload)
+    req.end()
+  })
+}
+
 function sstatsGet(path, params = {}) {
   const key = process.env.SSTATS_API_KEY
   if (!key) return Promise.resolve({ data: [] })
@@ -180,120 +236,106 @@ router.post('/generate-from-match', authenticate, async (req, res) => {
   if (existing) return res.json({ already: true, article: existing })
 
   try {
-    // ── Шаг 1: получаем статистику из sstats ─────────────────────────────────
-    let homeForm = null, awayForm = null, h2h = []
+    const dateStr = formatMatchDate(date)
+    const year = new Date().getFullYear()
 
-    if (matchId) {
-      const [statsRes, h2hRes] = await Promise.allSettled([
-        sstatsGet('/Games/last-games-stats', { gameId: matchId }),
-        (homeId && awayId)
-          ? sstatsGet('/Games/list', { ended: true, bothTeams: `${homeId},${awayId}`, limit: 10 })
-          : Promise.resolve({ data: [] }),
-      ])
-      if (statsRes.status === 'fulfilled' && statsRes.value?.home) {
-        homeForm = statsRes.value.home
-        awayForm = statsRes.value.away
-      }
-      if (h2hRes.status === 'fulfilled') h2h = h2hRes.value?.data || []
+    // ── Шаг 1: берём анализ из кеша или делаем web search ────────────────────
+    const analysisCacheKey = `wsearch_${(sport||'f')[0]}_${normalize(home)}_${normalize(away)}`
+    let analysis = null
+
+    const cachedAnalysis = blogCacheGet(analysisCacheKey)
+    if (cachedAnalysis) {
+      try { analysis = JSON.parse(cachedAnalysis); console.log(`[blog] Using cached analysis for ${home} vs ${away}`) }
+      catch {}
     }
 
-    const dateStr = formatMatchDate(date)
-
-    const formBlock = homeForm ? `
-Форма за последние ${homeForm.gamesCount} матчей:
-- ${home}: ${homeForm.wins}П/${homeForm.draws}Н/${homeForm.loses}П, забивает ${homeForm.avgScore?.toFixed(2)} гола за матч
-- ${away}: ${awayForm.wins}П/${awayForm.draws}Н/${awayForm.loses}П, забивает ${awayForm.avgScore?.toFixed(2)} гола за матч` : ''
-
-    const h2hBlock = h2h.length > 0 ? `
-Последние очные встречи:
-${h2h.slice(0, 5).map(g => {
-  const hs = g.homeFTResult ?? g.homeScore ?? '?'
-  const as = g.awayFTResult ?? g.awayScore ?? '?'
-  return `- ${g.homeTeam?.name} ${hs}:${as} ${g.awayTeam?.name}`
-}).join('\n')}` : ''
-
-    // ── Шаг 2: реальный AI-анализ матча (как на странице /analyze) ───────────
-    const analysisPrompt = `Ты профессиональный спортивный аналитик. Отвечай СТРОГО по-русски.
+    if (!analysis) {
+      console.log(`[blog] Running web search analysis for ${home} vs ${away}`)
+      const searchPrompt = `Ты профессиональный спортивный аналитик. Проанализируй предстоящий матч.
 
 МАТЧ: ${home} vs ${away}
-ЛИГА: ${league || 'не указана'}
-ДАТА: ${dateStr || date || 'ближайшее время'}
-ВИД СПОРТА: ${sport}
-${formBlock}
-${h2hBlock}
+ТУРНИР: ${league || 'не указан'}
+${date ? `Дата: ${date}` : ''}
 
-Сделай предматчевый анализ. Определи фаворита, дай 2-3 дополнительные ставки.
+ЗАДАЧА: найди в интернете актуальную информацию за ${year} год:
+1. Последние 5-7 матчей ${home} — результаты, форма
+2. Последние 5-7 матчей ${away} — результаты, форма
+3. История очных встреч (3-5 матчей)
+4. Травмы и дисквалификации ключевых игроков
+5. Актуальные новости перед матчем
 
-Ответь СТРОГО в JSON (без markdown, без пояснений):
+Ответь СТРОГО в JSON (без markdown):
 {
-  "verdict": "чёткий вердикт — например 'Победа ${home}' или 'Победа ${away}' или 'Ничья'",
+  "verdict": "чёткий вердикт — победитель",
+  "summary": "3-4 предложения с фактами из интернета",
   "confidence": число 50-90,
-  "risk": "low | medium | high",
-  "summary": "2-3 предложения с обоснованием вердикта",
+  "reasons": ["факт 1", "факт 2", "факт 3"],
   "extraBets": [
     {"type": "название ставки", "confidence": число},
     {"type": "название ставки", "confidence": число},
     {"type": "название ставки", "confidence": число}
   ]
 }`
-
-    let aiVerdict = null, aiConfidence = null, aiRisk = null, aiSummary = null, aiExtraBets = []
-    try {
-      const analysisRaw = await openAIChat([
-        { role: 'system', content: 'Ты спортивный аналитик. Отвечай только JSON.' },
-        { role: 'user', content: analysisPrompt },
-      ], 600)
-      const cleaned = analysisRaw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
-      const parsed = JSON.parse(cleaned)
-      aiVerdict = parsed.verdict || null
-      aiConfidence = parsed.confidence || null
-      aiRisk = parsed.risk || null
-      aiSummary = parsed.summary || null
-      aiExtraBets = Array.isArray(parsed.extraBets) ? parsed.extraBets.slice(0, 3) : []
-    } catch (e) {
-      console.warn('[blog/generate] AI analysis failed, proceeding without:', e.message)
+      try {
+        const raw = await callOpenAIWithWebSearch([
+          { role: 'system', content: 'Ты спортивный аналитик. Ищи реальные данные в интернете. Отвечай только JSON.' },
+          { role: 'user', content: searchPrompt },
+        ])
+        const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
+        let parsed
+        try { parsed = JSON.parse(cleaned) }
+        catch { const m = raw.match(/\{[\s\S]*\}/); parsed = m ? JSON.parse(m[0]) : null }
+        if (parsed?.verdict) {
+          analysis = parsed
+          blogCacheSet(analysisCacheKey, JSON.stringify(parsed))
+        }
+      } catch (e) { console.warn('[blog] web search failed:', e.message) }
     }
 
-    // ── Шаг 3: генерируем статью с реальным вердиктом ────────────────────────
+    const aiVerdict = analysis?.verdict || null
+    const aiSummary = analysis?.summary || null
+    const aiReasons = Array.isArray(analysis?.reasons) ? analysis.reasons : []
+    const aiExtraBets = Array.isArray(analysis?.extraBets) ? analysis.extraBets.slice(0, 3) : []
+
+    // ── Шаг 2: генерируем статью с реальным вердиктом ────────────────────────
+    const verdictLine = aiVerdict || '[определи по контексту]'
     const lockedBets = aiExtraBets.length > 0
       ? aiExtraBets.map(b => `   🔒 ${b.type}: *** *(узнать полный анализ на Valorix)*`).join('\n')
-      : `   🔒 Тотал голов: Больше/Меньше *** *(узнать полный анализ на Valorix)*
-   🔒 Дополнительная ставка: *** *(узнать полный анализ на Valorix)*`
+      : `   🔒 Тотал: *** *(узнать полный анализ на Valorix)*\n   🔒 Дополнительная ставка: *** *(узнать полный анализ на Valorix)*`
 
-    const verdictLine = aiVerdict || `[определи сам по контексту матча]`
+    const reasonsBlock = aiReasons.length > 0
+      ? `\nКлючевые факты из анализа:\n${aiReasons.map(r => `- ${r}`).join('\n')}` : ''
 
     const prompt = `Ты опытный спортивный журналист. Напиши SEO-статью на русском языке о предстоящем матче.
 
 МАТЧ: ${home} — ${away}
-ЛИГА: ${league}
+ЛИГА: ${league || 'не указана'}
 ДАТА: ${dateStr || date || 'ближайшее время'}
-${formBlock}
-${h2hBlock}
+ВИД СПОРТА: ${sport}
 ВЕРДИКТ AI: ${verdictLine}
-${aiSummary ? `ОБОСНОВАНИЕ: ${aiSummary}` : ''}
+${aiSummary ? `АНАЛИЗ: ${aiSummary}` : ''}
+${reasonsBlock}
 
-ТРЕБОВАНИЯ К СТАТЬЕ:
+ТРЕБОВАНИЯ:
 1. Заголовок: "${home} — ${away}: прогноз на матч ${dateStr || ''}" — точно такой формат
-2. Структура (используй ## для заголовков, СТРОГО в этом порядке):
+2. Структура (## для заголовков):
    ## О матче (2-3 предложения — важность, контекст)
-   ## Прогноз Valorix AI (СТРОГО по шаблону ниже — сразу после О матче!)
-   ## Форма команд (опирайся на данные выше, без выдумок)
-   ## История встреч (если есть данные выше)
+   ## Прогноз Valorix AI (СТРОГО по шаблону ниже!)
+   ## Форма команд (используй факты из анализа выше)
+   ## История встреч
    ## Итог (1-2 предложения)
-3. В разделе "Прогноз Valorix AI" используй СТРОГО этот формат (не менять):
+3. В разделе "Прогноз Valorix AI" СТРОГО этот формат:
    🤖 **Valorix AI прогнозирует:**
    ✅ Исход: ${verdictLine}
 ${lockedBets}
-4. В конце добавь CTA:
-   > 🔍 Хочешь узнать полный разбор с коэффициентами и дополнительными ставками? [Анализируй матч на Valorix →](https://valorix.ru/analyze)
-5. Длина: 400-600 слов
-6. Каждая статья должна быть уникальной по стилю
-7. НЕ выдумывай статистику которой нет в данных выше
+4. CTA в конце:
+   > 🔍 Полный разбор с коэффициентами → [Анализируй на Valorix](https://valorix.ru/analyze)
+5. Длина: 400-600 слов. Стиль живой, уникальный.
 
-Ответь ТОЛЬКО текстом статьи в Markdown, без json и без пояснений.`
+Ответь ТОЛЬКО текстом статьи в Markdown.`
 
     const content = await openAIChat([
-      { role: 'system', content: 'Ты спортивный журналист. Пиши живо, по-русски, уникально каждый раз.' },
+      { role: 'system', content: 'Ты спортивный журналист. Пиши живо, по-русски, уникально.' },
       { role: 'user', content: prompt },
     ])
 
