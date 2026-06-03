@@ -470,6 +470,29 @@ router.get('/football', async (req, res) => {
   }
 })
 
+// GET /matches/debug — shows raw Fonbet data before filtering (temporary)
+router.get('/debug', async (req, res) => {
+  try {
+    const { data, tree, leagueNames, oddsMap } = await getFonbetData()
+    const allFootball = (data.events || [])
+      .filter(e => e.level === 1 && e.team1 && e.team2 && tree[e.sportId] === FONBET_SPORT_IDS.football)
+    const withOdds = allFootball.filter(e => oddsMap[e.id])
+    const sample = withOdds.slice(0, 30).map(e => {
+      const league = leagueNames[e.sportId] || ''
+      const score = getLeagueScore('football', league)
+      return { home: e.team1, away: e.team2, league, score, passes: score > 50 }
+    })
+    res.json({
+      totalEvents: (data.events || []).length,
+      footballLevel1: allFootball.length,
+      withOdds: withOdds.length,
+      sample,
+    })
+  } catch (err) {
+    res.json({ error: err.message })
+  }
+})
+
 // GET /matches/esports — Fonbet esports (CS2, Dota2, LoL, Valorant)
 router.get('/esports', async (req, res) => {
   try {
