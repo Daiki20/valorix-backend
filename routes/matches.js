@@ -496,7 +496,7 @@ router.get('/debug', async (req, res) => {
 // GET /matches/esports — Fonbet esports (CS2, Dota2, LoL, Valorant)
 router.get('/esports', async (req, res) => {
   try {
-    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.esports, 20)
+    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.esports, 60)
     console.log(`[matches/esports] Fonbet: ${games.length} games`)
     res.json({ data: games })
   } catch (err) {
