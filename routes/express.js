@@ -772,20 +772,9 @@ async function fetchTeamFormForExpress(teamId) {
 async function generateSportExpress(sport, type, targetDate) {
   let matches = []
 
-  // Accumulate matches from targetDate + next 4 days until we have at least 2
-  // (NHL playoffs may have only 1 game per day — combine days)
-  for (let i = 0; i <= 4; i++) {
-    const d = new Date(targetDate); d.setDate(d.getDate() + i)
-    const dateStr = d.toISOString().slice(0, 10)
-    const dayMatches = await fetchHockeyMatchesForExpress(dateStr)
-    for (const m of dayMatches) {
-      if (!matches.some(g => g.home === m.home && g.away === m.away)) {
-        matches.push(m)
-      }
-    }
-    if (matches.length >= 2) break
-  }
-  if (matches.length < 2) throw new Error('Нет хоккейных матчей в ближайшие дни')
+  // Берём матчи ТОЛЬКО на targetDate — никаких других дней
+  matches = await fetchHockeyMatchesForExpress(targetDate)
+  if (matches.length < 2) throw new Error(`Нет хоккейных матчей на ${targetDate}`)
 
   // Overlay real bookmaker odds from The Odds API
   const oddsMap = await fetchHockeyOddsForExpress().catch(() => ({}))
@@ -1046,13 +1035,10 @@ router.get('/today', async (req, res) => {
     // expressDate нужен для хоккея и других видов спорта (стандартная логика)
     const expressDate = getTomorrowDate()
 
-    // ── Football: smart date search (завтра → сегодня → послезавтра → +3) ─────
+    // ── Football: ищем только завтра, послезавтра, +3 (НЕ сегодня — матчи должны быть завтрашними)
     if (sport === 'football') {
-      // Кандидаты в порядке приоритета: завтра первый (основной режим),
-      // потом сегодня и послезавтра как fallback
       const CANDIDATE_DATES = [
         getTomorrowDate(),
-        getTodayDate(),
         getDateOffset(2),
         getDateOffset(3),
       ]
@@ -1459,28 +1445,10 @@ router.post('/generate', authenticate, async (req, res) => {
 async function generateEsportsExpress(game, type, targetDate) {
   const { getFonbetEsportsMatches } = require('./matches')
 
-  // Try today + next 3 days to find enough matches
-  let matches = []
-  for (let i = 0; i <= 3; i++) {
-    const d = new Date(targetDate); d.setDate(d.getDate() + i)
-    const dateStr = d.toISOString().slice(0, 10)
-    const dayMatches = await getFonbetEsportsMatches(game, dateStr)
-    for (const m of dayMatches) {
-      if (!matches.some(g => g.home === m.home && g.away === m.away)) matches.push(m)
-    }
-    if (matches.length >= 3) break
-  }
-
-  // Also try without date filter if still not enough
+  // Берём матчи ТОЛЬКО на targetDate — никакого расширения на другие дни
+  const matches = await getFonbetEsportsMatches(game, targetDate)
   if (matches.length < 2) {
-    const allMatches = await getFonbetEsportsMatches(game, null)
-    for (const m of allMatches) {
-      if (!matches.some(g => g.home === m.home && g.away === m.away)) matches.push(m)
-    }
-  }
-
-  if (matches.length < 2) {
-    throw new Error(`Нет матчей ${game} на ближайшие дни`)
+    throw new Error(`Нет матчей ${game} на ${targetDate}`)
   }
 
   const useMatches = matches.slice(0, 10)
