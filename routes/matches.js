@@ -494,10 +494,19 @@ router.get('/debug', async (req, res) => {
 })
 
 // GET /matches/esports — Fonbet esports (CS2, Dota2, LoL, Valorant)
+// Returns up to 20 matches per game type independently
 router.get('/esports', async (req, res) => {
   try {
-    const games = await getFonbetSportEvents(FONBET_SPORT_IDS.esports, 60)
-    console.log(`[matches/esports] Fonbet: ${games.length} games`)
+    const allGames = await getFonbetSportEvents(FONBET_SPORT_IDS.esports, 200)
+    // Group by sport, take top 20 each
+    const bySport = {}
+    for (const g of allGames) {
+      const s = g.sport || 'cs2'
+      if (!bySport[s]) bySport[s] = []
+      bySport[s].push(g)
+    }
+    const games = Object.values(bySport).flatMap(arr => arr.slice(0, 20))
+    console.log(`[matches/esports] Fonbet: ${allGames.length} raw → ${games.length} after per-sport cap`)
     res.json({ data: games })
   } catch (err) {
     console.error('[matches/esports]', err.message)
