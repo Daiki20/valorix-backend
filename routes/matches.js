@@ -2256,6 +2256,49 @@ router.get('/hockey-debug', (req, res) => {
 })
 
 module.exports = router
+
+// ── Exported: esports matches with extended markets for express ───────────────
+module.exports.getFonbetEsportsMatches = async function(game, targetDate) {
+  const { data, tree, leagueNames } = await getFonbetData()
+
+  const extMap = {}
+  for (const cf of (data.customFactors || [])) {
+    const f = {}
+    for (const factor of (cf.factors || [])) f[factor.f] = factor.v
+    if (!f[921] && !f[923]) continue
+    extMap[cf.e] = {
+      home:   f[921]  || null,   // П1
+      away:   f[923]  || null,   // П2
+      tb25:   f[927]  || null,   // ТБ 2.5 карты
+      tm25:   f[928]  || null,   // ТМ 2.5 карты
+      map1h:  f[3274] || null,   // Победа в карте 1 (П1)
+      map1a:  f[3275] || null,   // Победа в карте 1 (П2)
+      hcp1:   f[3262] || null,   // Фора карт П1 +1.5
+      hcp2:   f[3263] || null,   // Фора карт П2 +1.5
+    }
+  }
+
+  return (data.events || [])
+    .filter(e =>
+      e.level === 1 && e.team1 && e.team2 &&
+      tree[e.sportId] === FONBET_SPORT_IDS.esports &&
+      e.place !== 'live' &&
+      extMap[e.id]?.home
+    )
+    .map(e => {
+      const league = leagueNames[e.sportId] || ''
+      const sport  = detectEsportType(league)
+      const score  = getLeagueScore(sport, league)
+      const rawDate = new Date(e.startTime * 1000).toISOString().slice(0, 10)
+      return { home: e.team1, away: e.team2, league, sport, score, rawDate, markets: extMap[e.id] }
+    })
+    .filter(e => e.sport === game)
+    .filter(e => !targetDate || e.rawDate === targetDate)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 20)
+    .map(({ home, away, league, markets }) => ({ home, away, league, markets }))
+}
+
 module.exports.getFonbetFootballMatches = async function(targetDate) {
   // Get full Fonbet data (cached) to extract extended markets
   const { data, tree, leagueNames } = await getFonbetData()

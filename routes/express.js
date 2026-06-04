@@ -1125,7 +1125,10 @@ router.get('/today', async (req, res) => {
           const existing = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(expressDate, sport, type)
           if (existing) { row = existing; return }
           try {
-            const data = await generateSportExpress(sport, type, expressDate)
+            const isEsport = sport === 'cs2' || sport === 'dota2'
+            const data = isEsport
+              ? await generateEsportsExpress(sport, type, expressDate)
+              : await generateSportExpress(sport, type, expressDate)
             db.prepare('INSERT OR IGNORE INTO express_sports (date, sport, type, data) VALUES (?, ?, ?, ?)').run(expressDate, sport, type, JSON.stringify(data))
             row = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(expressDate, sport, type)
           } catch (e) {
@@ -1452,8 +1455,118 @@ router.post('/generate', authenticate, async (req, res) => {
   }
 })
 
+// ── Esports express generator (CS2 / Dota2) ──────────────────────────────────
+async function generateEsportsExpress(game, type, targetDate) {
+  const { getFonbetEsportsMatches } = require('./matches')
+
+  // Try today + next 3 days to find enough matches
+  let matches = []
+  for (let i = 0; i <= 3; i++) {
+    const d = new Date(targetDate); d.setDate(d.getDate() + i)
+    const dateStr = d.toISOString().slice(0, 10)
+    const dayMatches = await getFonbetEsportsMatches(game, dateStr)
+    for (const m of dayMatches) {
+      if (!matches.some(g => g.home === m.home && g.away === m.away)) matches.push(m)
+    }
+    if (matches.length >= 3) break
+  }
+
+  // Also try without date filter if still not enough
+  if (matches.length < 2) {
+    const allMatches = await getFonbetEsportsMatches(game, null)
+    for (const m of allMatches) {
+      if (!matches.some(g => g.home === m.home && g.away === m.away)) matches.push(m)
+    }
+  }
+
+  if (matches.length < 2) {
+    throw new Error(`Нет матчей ${game} на ближайшие дни`)
+  }
+
+  const useMatches = matches.slice(0, 10)
+  const gameName = game === 'cs2' ? 'CS2' : 'Dota 2'
+  const isHigh = type === 'high'
+
+  const matchBlocks = useMatches.map((m, i) => {
+    const o = m.markets || {}
+    const lines = []
+    if (o.home)  lines.push(`П1=${o.home}`)
+    if (o.away)  lines.push(`П2=${o.away}`)
+    if (o.tb25)  lines.push(`ТБ2.5карт=${o.tb25}`)
+    if (o.tm25)  lines.push(`ТМ2.5карт=${o.tm25}`)
+    if (o.map1h) lines.push(`Карта1-П1=${o.map1h}`)
+    if (o.map1a) lines.push(`Карта1-П2=${o.map1a}`)
+    if (o.hcp1)  lines.push(`Фора+1.5(П1)=${o.hcp1}`)
+    if (o.hcp2)  lines.push(`Фора+1.5(П2)=${o.hcp2}`)
+    return `${i + 1}. ${m.home} vs ${m.away} [${m.league}]\n   ${lines.join('  ')}`
+  }).join('\n\n')
+
+  const oddsReq = isHigh
+    ? `- РОВНО 3 события, итоговый коэф НЕ МЕНЕЕ 3.00, каждый коэф от 1.40
+- Ищи ценность в форах карт (+1.5), победителе первой карты, тоталах карт
+- Вероятность каждой ставки >55%`
+    : `- РОВНО 2 события, итоговый коэф от 2.00 до 3.00
+- Предпочитай надёжные ставки: тотал карт ТМ2.5 или фора +1.5 для фаворита
+- Вероятность каждой ставки >65%, каждый коэф от 1.40 до 2.00`
+
+  const prompt = `Ты — эксперт по ставкам на ${gameName}. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс.
+
+МАТЧИ ${gameName.toUpperCase()} С КОЭФФИЦИЕНТАМИ FONBET:
+${matchBlocks}
+
+ПОЯСНЕНИЕ РЫНКОВ:
+- П1/П2 — победитель матча
+- ТБ/ТМ 2.5 карт — сыграют больше/меньше 2.5 карт (матч идёт до 3 карт в Bo3)
+- Карта1-П1/П2 — кто выиграет первую карту
+- Фора+1.5 — команда выиграет хотя бы 1 карту в Bo3
+
+Требования:
+- Выбирай ТОЛЬКО из матчей выше
+- В "odds" ставь ТОЧНОЕ число из таблицы выше
+- В "prediction" пиши по-русски: "Победа команды X (П1)", "ТБ 2.5 карт", "Карта 1 — X", "Фора +1.5 — X"
+- Поля home/away/league — ТОЧНО как в списке выше
+- ВСЕ поля — на русском языке
+${oddsReq}
+
+Ответь ТОЛЬКО валидным JSON:
+{
+  "date": "${targetDate}",
+  "picks": [
+    {
+      "home": "название",
+      "away": "название",
+      "league": "лига",
+      "prediction": "ТБ 2.5 карт",
+      "odds": 1.83,
+      "reasoning": "2-3 предложения почему этот исход надёжный."
+    }
+  ],
+  "total_odds": 2.75,
+  "summary": "Краткое описание экспресса на русском"
+}`
+
+  const content = await openAIRequest([
+    { role: 'system', content: `Ты эксперт по ставкам на ${gameName}. Отвечай только валидным JSON на русском языке.` },
+    { role: 'user', content: prompt },
+  ])
+
+  const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) throw new Error('Invalid JSON from OpenAI')
+  let data
+  try { data = JSON.parse(jsonMatch[0]) } catch { throw new Error('JSON parse failed') }
+
+  const expectedPicks = isHigh ? 3 : 2
+  if (!data.picks || data.picks.length < expectedPicks) throw new Error('Not enough picks')
+  data.picks = data.picks.slice(0, expectedPicks)
+
+  const total = data.picks.reduce((acc, p) => acc * (parseFloat(p.odds) || 1), 1)
+  data.total_odds = Math.round(total * 100) / 100
+  return data
+}
+
 module.exports = router
-module.exports.generateExpressForDate = generateExpress
+module.exports.generateExpressForDate    = generateExpress
 module.exports.generateSportExpressForCron = generateSportExpress
-module.exports.getTomorrowDate = getTomorrowDate
-module.exports.getTomorrowDate = getTomorrowDate
+module.exports.generateEsportsExpress    = generateEsportsExpress
+module.exports.getTomorrowDate           = getTomorrowDate

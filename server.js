@@ -224,6 +224,58 @@ cron.schedule('15 21 * * *', async () => {
   }
 }, { timezone: 'UTC' })
 
+// ── Cron: 🔫 CS2 Lite at 00:25 MSK (21:25 UTC) ───────────────────────────────
+cron.schedule('25 21 * * *', async () => {
+  const { generateEsportsExpress, getTomorrowDate } = require('./routes/express')
+  const db = require('./db')
+  const targetDate = getTomorrowDate()
+  console.log(`[cron] 🔫 CS2 Lite generating for ${targetDate}...`)
+  try {
+    const data = await generateEsportsExpress('cs2', 'standard', targetDate)
+    db.prepare('INSERT OR REPLACE INTO express_sports (date, sport, type, data) VALUES (?, ?, ?, ?)').run(targetDate, 'cs2', 'standard', JSON.stringify(data))
+    console.log(`[cron] 🔫 CS2 Lite done`)
+  } catch (err) { console.error('[cron] 🔫 CS2 Lite failed:', err.message) }
+}, { timezone: 'UTC' })
+
+// ── Cron: 🔫 CS2 Hard at 00:30 MSK (21:30 UTC) ───────────────────────────────
+cron.schedule('30 21 * * *', async () => {
+  const { generateEsportsExpress, getTomorrowDate } = require('./routes/express')
+  const db = require('./db')
+  const targetDate = getTomorrowDate()
+  console.log(`[cron] 🔫 CS2 Hard generating for ${targetDate}...`)
+  try {
+    const data = await generateEsportsExpress('cs2', 'high', targetDate)
+    db.prepare('INSERT OR REPLACE INTO express_sports (date, sport, type, data) VALUES (?, ?, ?, ?)').run(targetDate, 'cs2', 'high', JSON.stringify(data))
+    console.log(`[cron] 🔫 CS2 Hard done`)
+  } catch (err) { console.error('[cron] 🔫 CS2 Hard failed:', err.message) }
+}, { timezone: 'UTC' })
+
+// ── Cron: 🎮 Dota2 Lite at 00:35 MSK (21:35 UTC) ─────────────────────────────
+cron.schedule('35 21 * * *', async () => {
+  const { generateEsportsExpress, getTomorrowDate } = require('./routes/express')
+  const db = require('./db')
+  const targetDate = getTomorrowDate()
+  console.log(`[cron] 🎮 Dota2 Lite generating for ${targetDate}...`)
+  try {
+    const data = await generateEsportsExpress('dota2', 'standard', targetDate)
+    db.prepare('INSERT OR REPLACE INTO express_sports (date, sport, type, data) VALUES (?, ?, ?, ?)').run(targetDate, 'dota2', 'standard', JSON.stringify(data))
+    console.log(`[cron] 🎮 Dota2 Lite done`)
+  } catch (err) { console.error('[cron] 🎮 Dota2 Lite failed:', err.message) }
+}, { timezone: 'UTC' })
+
+// ── Cron: 🎮 Dota2 Hard at 00:40 MSK (21:40 UTC) ─────────────────────────────
+cron.schedule('40 21 * * *', async () => {
+  const { generateEsportsExpress, getTomorrowDate } = require('./routes/express')
+  const db = require('./db')
+  const targetDate = getTomorrowDate()
+  console.log(`[cron] 🎮 Dota2 Hard generating for ${targetDate}...`)
+  try {
+    const data = await generateEsportsExpress('dota2', 'high', targetDate)
+    db.prepare('INSERT OR REPLACE INTO express_sports (date, sport, type, data) VALUES (?, ?, ?, ?)').run(targetDate, 'dota2', 'high', JSON.stringify(data))
+    console.log(`[cron] 🎮 Dota2 Hard done`)
+  } catch (err) { console.error('[cron] 🎮 Dota2 Hard failed:', err.message) }
+}, { timezone: 'UTC' })
+
 // ── 404 ───────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({ error: 'Маршрут не найден' })
