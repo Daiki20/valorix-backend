@@ -194,13 +194,16 @@ router.get('/', (req, res) => {
   res.json({ total, page, limit, items })
 })
 
-// GET /blog/:slug — single article (increments views)
+// GET /blog/:slug — single article (increments views, unless X-No-Track header set)
 router.get('/:slug', (req, res) => {
   const article = db.prepare('SELECT * FROM articles WHERE slug = ? AND published = 1').get(req.params.slug)
   if (!article) return res.status(404).json({ error: 'Статья не найдена' })
 
-  db.prepare('UPDATE articles SET views = views + 1 WHERE id = ?').run(article.id)
-  res.json({ ...article, views: article.views + 1 })
+  const noTrack = req.headers['x-no-track'] === '1' || req.query.notrack === '1'
+  if (!noTrack) {
+    db.prepare('UPDATE articles SET views = views + 1 WHERE id = ?').run(article.id)
+  }
+  res.json({ ...article, views: noTrack ? article.views : article.views + 1 })
 })
 
 // ── Admin routes ──────────────────────────────────────────────────────────────
