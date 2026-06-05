@@ -4,6 +4,33 @@ const router  = express.Router()
 const db      = require('../db')
 const { authenticate } = require('../middleware/auth')
 
+// ── IndexNow — instant ping to Bing/Yandex/Google on article publish ─────────
+const INDEXNOW_KEY  = '4997fa57db99748cb057e61f8b467535'
+const SITE_HOST     = 'valorix.ru'
+
+function pingIndexNow(slug) {
+  const url = `https://${SITE_HOST}/blog/${slug}`
+  const body = JSON.stringify({
+    host: SITE_HOST,
+    key: INDEXNOW_KEY,
+    keyLocation: `https://${SITE_HOST}/${INDEXNOW_KEY}.txt`,
+    urlList: [url],
+  })
+  const req = https.request({
+    hostname: 'api.indexnow.org',
+    path: '/indexnow',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body) },
+    timeout: 8000,
+  }, res => {
+    console.log(`[indexnow] ${url} → HTTP ${res.statusCode}`)
+  })
+  req.on('error', e => console.warn('[indexnow] ping error:', e.message))
+  req.on('timeout', () => req.destroy())
+  req.write(body)
+  req.end()
+}
+
 // ── Helpers for article generation ───────────────────────────────────────────
 
 const SEARCH_CACHE_TTL = 12 * 60 * 60 * 1000 // 12 hours
@@ -219,6 +246,8 @@ router.post('/', authenticate, (req, res) => {
   `).run(slug, title.trim(), excerpt || '', content.trim(), meta_title || title.trim(), meta_desc || excerpt || '', cover_url || '', published ? 1 : 0, sport || 'other', match_key || null)
 
   const article = db.prepare('SELECT * FROM articles WHERE id = ?').get(result.lastInsertRowid)
+  // Пингуем IndexNow если статья опубликована
+  if (article.published) pingIndexNow(article.slug)
   res.json(article)
 })
 
@@ -397,7 +426,10 @@ router.put('/:id', authenticate, (req, res) => {
     id
   )
 
-  res.json(db.prepare('SELECT * FROM articles WHERE id = ?').get(id))
+  const updated = db.prepare('SELECT * FROM articles WHERE id = ?').get(id)
+  // Пингуем IndexNow если статья опубликована
+  if (updated.published) pingIndexNow(updated.slug)
+  res.json(updated)
 })
 
 // DELETE /blog/:id
