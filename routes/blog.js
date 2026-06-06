@@ -29,6 +29,19 @@ function pingIndexNow(slug) {
   req.on('timeout', () => req.destroy())
   req.write(body)
   req.end()
+
+  // Пингуем Google sitemap (просит перечитать весь sitemap)
+  const googleReq = https.request({
+    hostname: 'www.google.com',
+    path: `/ping?sitemap=https://${SITE_HOST}/sitemap.xml`,
+    method: 'GET',
+    timeout: 8000,
+  }, res => {
+    console.log(`[google-ping] sitemap ping → HTTP ${res.statusCode}`)
+  })
+  googleReq.on('error', e => console.warn('[google-ping] error:', e.message))
+  googleReq.on('timeout', () => googleReq.destroy())
+  googleReq.end()
 }
 
 // ── Helpers for article generation ───────────────────────────────────────────
@@ -192,6 +205,28 @@ router.get('/', (req, res) => {
   `).all(limit, offset)
 
   res.json({ total, page, limit, items })
+})
+
+// GET /blog/related/:slug — 3 related articles (same sport, excluding current)
+router.get('/related/:slug', (req, res) => {
+  const article = db.prepare('SELECT id, sport FROM articles WHERE slug = ? AND published = 1').get(req.params.slug)
+  if (!article) return res.json({ items: [] })
+
+  // Сначала ищем по тому же виду спорта, потом добираем любые
+  const sameSport = db.prepare(`
+    SELECT id, slug, title, excerpt, cover_url, sport, created_at
+    FROM articles WHERE published = 1 AND id != ? AND sport = ?
+    ORDER BY created_at DESC LIMIT 3
+  `).all(article.id, article.sport)
+
+  const items = sameSport.length >= 3 ? sameSport :
+    db.prepare(`
+      SELECT id, slug, title, excerpt, cover_url, sport, created_at
+      FROM articles WHERE published = 1 AND id != ?
+      ORDER BY created_at DESC LIMIT 3
+    `).all(article.id)
+
+  res.json({ items })
 })
 
 // GET /blog/:slug — single article (increments views, unless X-No-Track header set)
