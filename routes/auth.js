@@ -224,6 +224,62 @@ router.get('/history', authenticate, (req, res) => {
   res.json({ history })
 })
 
+function sendResetEmail(email, resetUrl) {
+  const html = `
+    <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
+      <h2 style="color:#1a1a2e">Сброс пароля</h2>
+      <p>Вы запросили сброс пароля для аккаунта <b>${email}</b>.</p>
+      <p>Нажмите кнопку ниже. Ссылка действует <b>1 час</b>.</p>
+      <a href="${resetUrl}" style="display:inline-block;margin:20px 0;padding:12px 28px;background:#2563eb;color:white;border-radius:8px;text-decoration:none;font-weight:600">
+        Сбросить пароль
+      </a>
+      <p style="color:#94a3b8;font-size:13px">Если вы не запрашивали сброс — просто проигнорируйте это письмо.</p>
+    </div>
+  `
+
+  // Resend API (preferred — тот же что и для верификации)
+  if (process.env.RESEND_API_KEY) {
+    const body = JSON.stringify({
+      from: process.env.SMTP_FROM || 'Valorix AI <noreply@valorix.ru>',
+      to: [email],
+      subject: 'Сброс пароля — Valorix AI',
+      html,
+    })
+    const req = https.request({
+      hostname: 'api.resend.com',
+      path: '/emails',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      },
+    }, res => {
+      let data = ''
+      res.on('data', chunk => data += chunk)
+      res.on('end', () => {
+        if (res.statusCode >= 400) console.error('Resend reset error:', data)
+        else console.log(`Reset email sent to ${email} via Resend`)
+      })
+    })
+    req.on('error', err => console.error('Resend reset error:', err.message))
+    req.setTimeout(10000, () => { req.destroy(); console.error('Resend reset timeout') })
+    req.write(body)
+    req.end()
+    return
+  }
+
+  // Nodemailer fallback (SMTP)
+  const mailer = createMailer()
+  if (!mailer) {
+    console.log(`[DEV] Password reset link: ${resetUrl}`)
+    return
+  }
+  mailer.sendMail({ from: process.env.SMTP_FROM, to: email, subject: 'Сброс пароля — Valorix AI', html })
+    .then(() => console.log(`Reset email sent to ${email} via SMTP`))
+    .catch(err => console.error('SMTP reset error:', err.message))
+}
+
 // POST /auth/forgot-password
 router.post('/forgot-password', async (req, res) => {
   const email = sanitizeEmail(req.body.email)
@@ -238,33 +294,8 @@ router.post('/forgot-password', async (req, res) => {
 
   db.prepare('UPDATE users SET reset_token = ?, reset_token_exp = ? WHERE id = ?').run(token, exp, user.id)
 
-  const mailer = createMailer()
-  if (!mailer) {
-    console.log(`[DEV] Password reset link: ${process.env.FRONTEND_URL}/reset-password?token=${token}`)
-    return res.json({ success: true })
-  }
-
   const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`
-  try {
-    await mailer.sendMail({
-      from: process.env.SMTP_FROM,
-      to: email,
-      subject: 'Сброс пароля — Valorix AI',
-      html: `
-        <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
-          <h2 style="color:#1a1a2e">Сброс пароля</h2>
-          <p>Вы запросили сброс пароля для аккаунта <b>${email}</b>.</p>
-          <p>Нажмите кнопку ниже. Ссылка действует <b>1 час</b>.</p>
-          <a href="${resetUrl}" style="display:inline-block;margin:20px 0;padding:12px 28px;background:#2563eb;color:white;border-radius:8px;text-decoration:none;font-weight:600">
-            Сбросить пароль
-          </a>
-          <p style="color:#94a3b8;font-size:13px">Если вы не запрашивали сброс — просто проигнорируйте это письмо.</p>
-        </div>
-      `,
-    })
-  } catch (err) {
-    console.error('Email send error:', err.message)
-  }
+  sendResetEmail(email, resetUrl)
 
   res.json({ success: true })
 })
