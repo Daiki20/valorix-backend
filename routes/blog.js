@@ -44,6 +44,23 @@ function pingIndexNow(slug) {
   googleReq.end()
 }
 
+// ── Sanitize AI-generated article content ────────────────────────────────────
+function sanitizeArticleContent(content) {
+  if (!content) return content
+  return content
+    // Убираем emoji из заголовков (строки начинающиеся с #)
+    .replace(/^(#{1,6}\s*)([^\n]*)/gm, (_, hashes, text) => {
+      const cleaned = text.replace(/[\u{1F300}-\u{1FAFF}]|[\u{2600}-\u{27BF}]/gu, '').trim()
+      return hashes + cleaned
+    })
+    // Схлопываем пустые строки внутри блока прогноза (между 🤖/✅/🔒 строками)
+    .replace(/((?:^[🤖✅🔒][^\n]*\n?)(?:\n+[🤖✅🔒][^\n]*\n?)+)/gm, match =>
+      match.replace(/\n{2,}/g, '\n')
+    )
+    // Убираем emoji из середины обычных слов (оставляем только в начале строки)
+    .replace(/([а-яёА-ЯЁa-zA-Z])[\u{1F300}-\u{1FAFF}]([а-яёА-ЯЁa-zA-Z])/gu, '$1$2')
+}
+
 // ── Helpers for article generation ───────────────────────────────────────────
 
 const SEARCH_CACHE_TTL = 12 * 60 * 60 * 1000 // 12 hours
@@ -390,26 +407,30 @@ ${reasonsBlock}
 
 ТРЕБОВАНИЯ:
 1. Заголовок: "${home} — ${away}: прогноз на матч ${dateStr || ''}" — точно такой формат
-2. Структура (## для заголовков):
+2. Структура (## для заголовков, БЕЗ emoji в заголовках):
    ## О матче (2-3 предложения — важность, контекст)
    ## Прогноз Valorix AI (СТРОГО по шаблону ниже!)
    ## Форма команд (используй факты из анализа выше)
    ## История встреч
    ## Итог (1-2 предложения)
-3. В разделе "Прогноз Valorix AI" СТРОГО этот формат:
+3. В разделе "Прогноз Valorix AI" СТРОГО этот формат (все строки подряд БЕЗ пустых строк между ними):
    🤖 **Valorix AI прогнозирует:**
    ✅ Исход: ${verdictLine}
 ${lockedBets}
 4. CTA в конце:
    > 🔍 Полный разбор с коэффициентами → [Анализируй на Valorix](https://valorix.ru/analyze)
 5. Длина: 400-600 слов. Стиль живой, уникальный.
+6. ВАЖНО: НЕ используй emoji внутри слов и в заголовках (##). Emoji только в блоке прогноза (🤖 ✅ 🔒) и CTA (🔍).
 
 Ответь ТОЛЬКО текстом статьи в Markdown.`
 
-    const content = await openAIChat([
-      { role: 'system', content: 'Ты спортивный журналист. Пиши живо, по-русски, уникально.' },
+    const rawContent = await openAIChat([
+      { role: 'system', content: 'Ты спортивный журналист. Пиши живо, по-русски, уникально. Не вставляй emoji в заголовки и середину слов.' },
       { role: 'user', content: prompt },
     ])
+
+    // Пост-обработка: убираем emoji из заголовков и схлопываем блок прогноза
+    const content = sanitizeArticleContent(rawContent)
 
     // Извлекаем заголовок из первой строки
     const lines = content.trim().split('\n')
