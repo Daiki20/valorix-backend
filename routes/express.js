@@ -1382,6 +1382,43 @@ router.get('/debug-hockey', authenticate, async (req, res) => {
   res.json(result)
 })
 
+// ── GET /express/debug-cs2 (admin) ───────────────────────────────────────────
+router.get('/debug-cs2', authenticate, async (req, res) => {
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Только для администраторов' })
+  await debugEsport('cs2', res)
+})
+
+// ── GET /express/debug-dota2 (admin) ─────────────────────────────────────────
+router.get('/debug-dota2', authenticate, async (req, res) => {
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Только для администраторов' })
+  await debugEsport('dota2', res)
+})
+
+async function debugEsport(game, res) {
+  const targetDate = getTomorrowDate()
+  const result = {
+    targetDate,
+    game,
+    totalMatches: 0,
+    matchesList: [],
+    error: null,
+  }
+  try {
+    const { getFonbetEsportsMatches } = require('./matches')
+    const matches = await getFonbetEsportsMatches(game, targetDate)
+    result.totalMatches = matches.length
+    result.matchesList = matches.map(m => ({
+      home: m.home,
+      away: m.away,
+      league: m.league,
+      markets: m.markets,
+    }))
+  } catch (err) {
+    result.error = err.message
+  }
+  res.json(result)
+}
+
 // ── POST /express/generate (admin) ───────────────────────────────────────────
 router.post('/generate', authenticate, async (req, res) => {
   if (!req.user.is_admin) return res.status(403).json({ error: 'Только для администраторов' })
@@ -1396,18 +1433,21 @@ router.post('/generate', authenticate, async (req, res) => {
   const sport = req.body?.sport || 'football'
 
   try {
-    // ── Non-football sports (hockey etc.) → express_sports table ─────────────
+    // ── Non-football sports → express_sports table ───────────────────────────
     if (sport !== 'football') {
+      const isEsport = sport === 'cs2' || sport === 'dota2'
+      const generator = isEsport ? generateEsportsExpress : generateSportExpress
+
       if (type === 'standard' || type === 'high') {
-        const data = await generateSportExpress(sport, type, expressDate)
+        const data = await generator(sport, type, expressDate)
         db.prepare('INSERT OR REPLACE INTO express_sports (date, sport, type, data) VALUES (?, ?, ?, ?)')
           .run(expressDate, sport, type, JSON.stringify(data))
         return res.json({ success: true, date: expressDate, sport, type, ...data })
       }
       // Both types
       const [standard, high] = await Promise.all([
-        generateSportExpress(sport, 'standard', expressDate),
-        generateSportExpress(sport, 'high',     expressDate),
+        generator(sport, 'standard', expressDate),
+        generator(sport, 'high',     expressDate),
       ])
       db.prepare('INSERT OR REPLACE INTO express_sports (date, sport, type, data) VALUES (?, ?, ?, ?)')
         .run(expressDate, sport, 'standard', JSON.stringify(standard))
