@@ -1102,42 +1102,62 @@ router.get('/today', async (req, res) => {
     }
 
     // ── Other sports: express_sports table ───────────────────────────────────
-    const getOrGenerateSport = async (type) => {
-      let row = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(expressDate, sport, type)
-      if (!row) {
-        const noMatchKey = `${sport}_${type}_${expressDate}`
-        if (isNoMatchCached(noMatchKey)) return null
-        await withMutex(`sport_${sport}_${type}_${expressDate}`, async () => {
-          const existing = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(expressDate, sport, type)
-          if (existing) { row = existing; return }
-          try {
-            const isEsport = sport === 'cs2' || sport === 'dota2'
-            const data = isEsport
-              ? await generateEsportsExpress(sport, type, expressDate)
-              : await generateSportExpress(sport, type, expressDate)
-            db.prepare('INSERT OR IGNORE INTO express_sports (date, sport, type, data) VALUES (?, ?, ?, ?)').run(expressDate, sport, type, JSON.stringify(data))
-            row = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(expressDate, sport, type)
-          } catch (e) {
-            console.error(`[express] ${sport}/${type}:`, e.message)
-            setNoMatchCache(noMatchKey)
-          }
-        })
-        if (!row) row = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(expressDate, sport, type)
-      }
-      if (!row) return null
+    // Candidate dates: today, tomorrow, +2, +3 — ищем готовый в любой из дат, иначе генерируем с завтра
+    const isEsport = sport === 'cs2' || sport === 'dota2'
+    const SPORT_CANDIDATE_DATES = isEsport
+      ? [getTodayDate(), getTomorrowDate(), getDateOffset(2), getDateOffset(3)]
+      : [getTomorrowDate(), getDateOffset(2), getDateOffset(3)]
+
+    const formatSportRow = (row, date, type) => {
       let expressData
       try { expressData = JSON.parse(row.data) } catch { return null }
       const purchased = userId
-        ? !!db.prepare('SELECT 1 FROM express_sports_purchases WHERE user_id = ? AND express_date = ? AND sport = ? AND type = ?').get(userId, expressDate, sport, type)
+        ? !!db.prepare('SELECT 1 FROM express_sports_purchases WHERE user_id = ? AND express_date = ? AND sport = ? AND type = ?').get(userId, date, sport, type)
         : false
-      if (purchased) return { date: expressDate, purchased: true, generated_at: row.created_at, ...expressData }
+      if (purchased) return { date, purchased: true, generated_at: row.created_at, ...expressData }
       return {
-        date: expressDate, purchased: false,
+        date, purchased: false,
         generated_at: row.created_at,
         summary: expressData.summary, total_odds: expressData.total_odds,
         picks_count: expressData.picks.length,
         picks: expressData.picks.map(p => ({ home: p.home, away: p.away, league: p.league, prediction: null, odds: null })),
       }
+    }
+
+    const getOrGenerateSport = async (type) => {
+      // 1. Ищем уже готовый экспресс в любой кандидатной дате
+      for (const date of SPORT_CANDIDATE_DATES) {
+        const row = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(date, sport, type)
+        if (row) return formatSportRow(row, date, type)
+      }
+
+      // 2. Не нашли — пробуем генерировать, начиная с завтра
+      const genDates = isEsport
+        ? [getTodayDate(), getTomorrowDate(), getDateOffset(2)]
+        : [getTomorrowDate(), getDateOffset(2)]
+
+      for (const date of genDates) {
+        const noMatchKey = `${sport}_${type}_${date}`
+        if (isNoMatchCached(noMatchKey)) continue
+        let row = null
+        await withMutex(`sport_${sport}_${type}_${date}`, async () => {
+          const existing = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(date, sport, type)
+          if (existing) { row = existing; return }
+          try {
+            const generator = isEsport ? generateEsportsExpress : generateSportExpress
+            const data = await generator(sport, type, date)
+            db.prepare('INSERT OR IGNORE INTO express_sports (date, sport, type, data) VALUES (?, ?, ?, ?)').run(date, sport, type, JSON.stringify(data))
+            row = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(date, sport, type)
+            console.log(`[express/${sport}] Generated ${type} for ${date}`)
+          } catch (e) {
+            console.warn(`[express/${sport}] No matches for ${date}: ${e.message}`)
+            setNoMatchCache(noMatchKey)
+          }
+        })
+        if (!row) row = db.prepare('SELECT * FROM express_sports WHERE date = ? AND sport = ? AND type = ?').get(date, sport, type)
+        if (row) return formatSportRow(row, date, type)
+      }
+      return null
     }
 
     const standard = await getOrGenerateSport('standard').catch(() => null)
