@@ -61,6 +61,9 @@ if (!userCols.includes('is_verified'))            db.exec("ALTER TABLE users ADD
 if (!userCols.includes('verification_code'))      db.exec("ALTER TABLE users ADD COLUMN verification_code TEXT")
 if (!userCols.includes('verification_code_exp'))  db.exec("ALTER TABLE users ADD COLUMN verification_code_exp INTEGER")
 
+// IP защита от мультиаккаунтов
+if (!userCols.includes('reg_ip')) db.exec("ALTER TABLE users ADD COLUMN reg_ip TEXT")
+
 const analysisCols2 = db.prepare("PRAGMA table_info(analyses)").all().map(c => c.name)
 if (!analysisCols2.includes('share_token')) {
   db.exec("ALTER TABLE analyses ADD COLUMN share_token TEXT")

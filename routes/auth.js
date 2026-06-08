@@ -17,6 +17,34 @@ function sanitizeEmail(email) {
   return (email || '').trim().toLowerCase().slice(0, 254)
 }
 
+// ── Одноразовые / мусорные email домены ──────────────────────────────────────
+const DISPOSABLE_DOMAINS = new Set([
+  'mailinator.com','guerrillamail.com','guerrillamail.net','guerrillamail.org',
+  'guerrillamail.biz','guerrillamail.de','guerrillamail.info','sharklasers.com',
+  'grr.la','spam4.me','trashmail.com','trashmail.me','trashmail.net','trashmail.at',
+  'trashmail.io','trashmail.org','yopmail.com','yopmail.fr','cool.fr.nf',
+  'jetable.fr.nf','nospam.ze.tc','nomail.xl.cx','mega.zik.dj','speed.1s.fr',
+  'courriel.fr.nf','moncourrier.fr.nf','monemail.fr.nf','monmail.fr.nf',
+  'tempmail.com','tempmail.net','temp-mail.org','temp-mail.ru','dispostable.com',
+  'throwam.com','throwam.net','mailnull.com','spamgourmet.com','mailnew.com',
+  'mailexpire.com','spamex.com','spamevader.net','maildrop.cc','filzmail.com',
+  'fakeinbox.com','crazymailing.com','fakemail.net','discard.email','discardmail.com',
+  'spam.la','spamfree24.org','spamfree24.de','spamfree24.net','spamfree24.com',
+  'hMailServer.com','10minutemail.com','10minutemail.net','20minutemail.com',
+  'tempinbox.com','tempinbox.co.uk','tempr.email','discard.email',
+  'h****pi.net','h****xbt.com', // конкретные домены из логов
+])
+
+function isDisposableEmail(email) {
+  const domain = (email || '').split('@')[1]?.toLowerCase()
+  if (!domain) return false
+  // Проверяем точное совпадение и похожие паттерны
+  if (DISPOSABLE_DOMAINS.has(domain)) return true
+  // Подозрительные паттерны в домене
+  if (/^[a-z0-9]{2,6}\.(xbt|pi|tk|ml|ga|cf|gq)$/.test(domain)) return true
+  return false
+}
+
 function sanitizeString(str, max = 100) {
   return (str || '').trim().slice(0, max)
 }
@@ -96,9 +124,10 @@ function sendVerificationCode(email, code) {
 
 // POST /auth/register
 router.post('/register', async (req, res) => {
-  const email = sanitizeEmail(req.body.email)
+  const email    = sanitizeEmail(req.body.email)
   const password = sanitizeString(req.body.password, 128)
   const username = sanitizeString(req.body.username, 50)
+  const ip       = req.ip || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || 'unknown'
 
   if (!email || !password) {
     return res.status(400).json({ error: 'Email и пароль обязательны' })
@@ -110,12 +139,25 @@ router.post('/register', async (req, res) => {
     return res.status(400).json({ error: 'Неверный формат email' })
   }
 
+  // ── Блок одноразовых email ──────────────────────────────────────────────────
+  if (isDisposableEmail(email)) {
+    return res.status(400).json({ error: 'Пожалуйста, используйте настоящий email адрес' })
+  }
+
+  // ── Лимит регистраций с одного IP (максимум 2) ──────────────────────────────
+  if (ip !== 'unknown') {
+    const ipCount = db.prepare('SELECT COUNT(*) as n FROM users WHERE reg_ip = ? AND is_verified = 1').get(ip)
+    if (ipCount.n >= 2) {
+      console.log(`[register] IP limit reached: ${ip} (${ipCount.n} accounts)`)
+      return res.status(429).json({ error: 'С этого устройства уже зарегистрировано максимальное количество аккаунтов' })
+    }
+  }
+
   const existing = db.prepare('SELECT id, is_verified FROM users WHERE email = ?').get(email)
   if (existing) {
     if (!existing.is_verified) {
-      // Resend code for unverified account
       const code = generateCode()
-      const exp = Date.now() + 15 * 60 * 1000
+      const exp  = Date.now() + 15 * 60 * 1000
       db.prepare('UPDATE users SET verification_code = ?, verification_code_exp = ? WHERE id = ?').run(code, exp, existing.id)
       sendVerificationCode(email, code)
       return res.status(200).json({ needsVerification: true, email })
@@ -125,11 +167,11 @@ router.post('/register', async (req, res) => {
 
   const password_hash = await bcrypt.hash(password, 12)
   const code = generateCode()
-  const exp = Date.now() + 15 * 60 * 1000
+  const exp  = Date.now() + 15 * 60 * 1000
 
   db.prepare(
-    'INSERT INTO users (email, password_hash, username, coins, is_verified, verification_code, verification_code_exp) VALUES (?, ?, ?, 0, 0, ?, ?)'
-  ).run(email, password_hash, username || email.split('@')[0], code, exp)
+    'INSERT INTO users (email, password_hash, username, coins, is_verified, verification_code, verification_code_exp, reg_ip) VALUES (?, ?, ?, 0, 0, ?, ?, ?)'
+  ).run(email, password_hash, username || email.split('@')[0], code, exp, ip)
 
   try { await sendVerificationCode(email, code) } catch (err) { console.error('Email error:', err.message) }
 
@@ -143,7 +185,7 @@ router.post('/verify-email', async (req, res) => {
 
   if (!email || !code) return res.status(400).json({ error: 'Email и код обязательны' })
 
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email)
+  const user = db.prepare('SELECT *, reg_ip FROM users WHERE email = ?').get(email)
   if (!user) return res.status(400).json({ error: 'Пользователь не найден' })
   if (user.is_verified) return res.status(400).json({ error: 'Email уже подтверждён' })
   if (!user.verification_code || user.verification_code !== code) {
@@ -153,8 +195,15 @@ router.post('/verify-email', async (req, res) => {
     return res.status(400).json({ error: 'Код устарел. Запросите новый.' })
   }
 
-  db.prepare('UPDATE users SET is_verified = 1, coins = 38, verification_code = NULL, verification_code_exp = NULL WHERE id = ?').run(user.id)
-  db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description) VALUES (?, 38, ?, ?)').run(user.id, 'bonus', 'Приветственный бонус')
+  // Бонус только если с этого IP ещё не получали (защита от мультиаккаунтов)
+  const userIp = user.reg_ip || 'unknown'
+  const ipBonusCount = userIp !== 'unknown'
+    ? db.prepare("SELECT COUNT(*) as n FROM users WHERE reg_ip = ? AND is_verified = 1 AND id != ?").get(userIp, user.id).n
+    : 0
+  const welcomeCoins = ipBonusCount === 0 ? 38 : 3 // уже получали бонус с этого IP — только 3 монеты
+
+  db.prepare('UPDATE users SET is_verified = 1, coins = ?, verification_code = NULL, verification_code_exp = NULL WHERE id = ?').run(welcomeCoins, user.id)
+  db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(user.id, welcomeCoins, 'bonus', welcomeCoins === 38 ? 'Приветственный бонус' : 'Бонус при регистрации')
 
   const updated = db.prepare('SELECT id, email, username, coins, is_admin, is_blocked, is_verified FROM users WHERE id = ?').get(user.id)
   const token = makeToken(updated.id)
