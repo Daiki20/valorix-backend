@@ -1,7 +1,26 @@
 const Database = require('better-sqlite3')
 const path = require('path')
+const fs   = require('fs')
 
-const db = new Database(path.join(process.env.DB_PATH || __dirname, 'valorix.db'))
+// ── Persistent storage path ───────────────────────────────────────────────────
+// Если DB_PATH задан (Railway Volume) — используем его
+// Иначе fallback на папку приложения
+const DB_DIR  = process.env.DB_PATH || __dirname
+const DB_FILE = path.join(DB_DIR, 'valorix.db')
+const OLD_FILE = path.join(__dirname, 'valorix.db')
+
+// Автомиграция: если переехали на Volume и там ещё нет БД — копируем старую
+if (process.env.DB_PATH && !fs.existsSync(DB_FILE)) {
+  fs.mkdirSync(DB_DIR, { recursive: true })
+  if (fs.existsSync(OLD_FILE)) {
+    fs.copyFileSync(OLD_FILE, DB_FILE)
+    console.log(`[db] Migrated database from ${OLD_FILE} to ${DB_FILE}`)
+  } else {
+    console.log(`[db] Creating new database at ${DB_FILE}`)
+  }
+}
+
+const db = new Database(DB_FILE)
 
 db.pragma('journal_mode = WAL')
 db.pragma('foreign_keys = ON')
