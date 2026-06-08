@@ -32,7 +32,9 @@ const DISPOSABLE_DOMAINS = new Set([
   'spam.la','spamfree24.org','spamfree24.de','spamfree24.net','spamfree24.com',
   'hMailServer.com','10minutemail.com','10minutemail.net','20minutemail.com',
   'tempinbox.com','tempinbox.co.uk','tempr.email','discard.email',
-  'h****pi.net','h****xbt.com', // конкретные домены из логов
+  // Домены замеченные в абузе (из логов)
+  'dustmail.net','hugeapi.net','hoangxbt.com',
+  'hoangpi.net','zenithion.com','galacticrune.com',
 ])
 
 function isDisposableEmail(email) {

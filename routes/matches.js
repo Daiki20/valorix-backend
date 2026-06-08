@@ -389,9 +389,19 @@ function detectEsportType(leagueName) {
   const l = (leagueName || '').toLowerCase()
   if (l.includes('cs2') || l.includes('counter-strike')) return 'cs2'
   if (l.includes('dota')) return 'dota2'
-  if (l.includes('league of legends') || l.includes(' lol')) return 'lol'
+  if (l.includes('league of legends') || l.includes(' lol') || l.includes('lol:')) return 'lol'
   if (l.includes('valorant')) return 'valorant'
-  return 'cs2'
+  if (l.includes('crossfire') || l.includes('cross fire')) return 'crossfire'
+  if (l.includes('overwatch')) return 'overwatch'
+  if (l.includes('starcraft') || l.includes('star craft')) return 'starcraft'
+  if (l.includes('rainbow six') || l.includes('r6')) return 'r6'
+  if (l.includes('pubg')) return 'pubg'
+  if (l.includes('hearthstone')) return 'hearthstone'
+  if (l.includes('rocket league')) return 'rocketleague'
+  if (l.includes('warcraft')) return 'warcraft'
+  if (l.includes('streamers') || l.includes('streamer')) return 'other'
+  // Неизвестная киберспортивная дисциплина — не CS2!
+  return 'other'
 }
 
 function fonbetFormatDate(startTime) {
