@@ -580,7 +580,7 @@ function buildSportExpressPrompt(sport, type, matches, date) {
     const picksCount  = isHigh ? 3 : 2
     const totalTarget = isHigh ? '3.00–5.00' : '2.00–3.00'
     const maxOdds     = isHigh ? 1.80 : 1.60
-    const minConf     = isHigh ? 60 : 65
+    const minConf     = 55
 
     const oddsNote = `КОЭФФИЦИЕНТЫ:
 - Где указаны П1/П2 — используй эти точные числа если выбираешь победу команды
@@ -630,7 +630,7 @@ ${statsInstruction}
   const picksCount  = isHigh ? 3 : 2
   const totalTarget = isHigh ? '3.00–5.00' : '2.00–3.00'
   const pickMaxOdds = isHigh ? 1.80 : 1.60
-  const minConf     = isHigh ? 60 : 65
+  const minConf     = 55
 
   const statsInstruction = hasAnyStats
     ? `- В "reasoning" ОБЯЗАТЕЛЬНО используй реальную статистику из блока выше
@@ -962,7 +962,7 @@ async function generateExpress(targetDate, type = 'standard') {
 - Вероятность прохода каждой ставки >55%`
     : `- Выбери РОВНО 2 события
 - Итоговый коэффициент экспресса от 2.00 до 3.00
-- Выбирай надёжные исходы с вероятностью прохода >70%
+- Выбирай исходы с вероятностью прохода >55%
 - Предпочитай тоталы (ТБ/ТМ 2.5) или Двойной шанс — они надёжнее чистого П1/П2
 - Каждый коэффициент от 1.40 до 2.00`
 
@@ -1535,7 +1535,7 @@ async function generateEsportsExpress(game, type, targetDate) {
 - Вероятность каждой ставки >55%`
     : `- РОВНО 2 события, итоговый коэф от 2.00 до 3.00
 - Предпочитай надёжные ставки: тотал карт ТМ2.5 или фора +1.5 для фаворита
-- Вероятность каждой ставки >65%, каждый коэф от 1.40 до 2.00`
+- Вероятность каждой ставки >55%, каждый коэф от 1.40 до 2.00`
 
   const prompt = `Ты — эксперт по ставкам на ${gameName}. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс.
 
