@@ -1102,11 +1102,9 @@ router.get('/today', async (req, res) => {
     }
 
     // ── Other sports: express_sports table ───────────────────────────────────
-    // Candidate dates: today, tomorrow, +2, +3 — ищем готовый в любой из дат, иначе генерируем с завтра
+    // Candidate dates: tomorrow, +2, +3 — всегда показываем завтрашний экспресс
     const isEsport = sport === 'cs2' || sport === 'dota2'
-    const SPORT_CANDIDATE_DATES = isEsport
-      ? [getTodayDate(), getTomorrowDate(), getDateOffset(2), getDateOffset(3)]
-      : [getTomorrowDate(), getDateOffset(2), getDateOffset(3)]
+    const SPORT_CANDIDATE_DATES = [getTomorrowDate(), getDateOffset(2), getDateOffset(3)]
 
     const formatSportRow = (row, date, type) => {
       let expressData
@@ -1131,10 +1129,8 @@ router.get('/today', async (req, res) => {
         if (row) return formatSportRow(row, date, type)
       }
 
-      // 2. Не нашли — пробуем генерировать, начиная с завтра
-      const genDates = isEsport
-        ? [getTodayDate(), getTomorrowDate(), getDateOffset(2)]
-        : [getTomorrowDate(), getDateOffset(2)]
+      // 2. Не нашли — пробуем генерировать начиная с завтра
+      const genDates = [getTomorrowDate(), getDateOffset(2)]
 
       for (const date of genDates) {
         const noMatchKey = `${sport}_${type}_${date}`
