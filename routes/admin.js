@@ -284,4 +284,91 @@ router.get('/cache', (req, res) => {
   }
 })
 
+// ── POST /admin/newsletter — рассылка по всем пользователям ──────────────────
+router.post('/newsletter', authenticate, requireAdmin, async (req, res) => {
+  const { subject, text } = req.body
+  if (!subject || !text) return res.status(400).json({ error: 'Нужны subject и text' })
+  if (!process.env.RESEND_API_KEY) return res.status(500).json({ error: 'RESEND_API_KEY не настроен' })
+
+  // Берём всех незаблокированных верифицированных пользователей
+  const users = db.prepare(
+    `SELECT email, username FROM users WHERE is_blocked = 0 AND is_verified = 1 AND email NOT LIKE '%@example.com'`
+  ).all()
+
+  if (!users.length) return res.json({ sent: 0, failed: 0, total: 0 })
+
+  // HTML-шаблон письма
+  const buildHtml = (username) => `
+    <div style="font-family:'Segoe UI',Arial,sans-serif;max-width:560px;margin:0 auto;background:#07090f;border-radius:16px;overflow:hidden;border:1px solid rgba(0,180,255,0.15)">
+      <div style="background:linear-gradient(135deg,#030b18,#0a1628);padding:28px 32px 20px;border-bottom:1px solid rgba(0,207,255,0.12)">
+        <span style="font-size:22px;font-weight:800;color:#d8eeff;letter-spacing:-0.5px">
+          Valorix <em style="color:#00cfff;font-style:italic">AI</em>
+        </span>
+      </div>
+      <div style="padding:28px 32px">
+        ${username ? `<p style="color:#64748b;font-size:14px;margin:0 0 16px">Привет, ${username} 👋</p>` : ''}
+        <div style="color:#d8eeff;font-size:15px;line-height:1.75;white-space:pre-wrap">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+      </div>
+      <div style="padding:20px 32px 28px;border-top:1px solid rgba(0,207,255,0.08)">
+        <a href="https://valorix.ru/analyze" style="display:inline-block;background:linear-gradient(135deg,#00cfff,#7b5ea7);color:#030b18;font-weight:700;font-size:14px;padding:12px 28px;border-radius:10px;text-decoration:none">
+          Открыть Valorix AI →
+        </a>
+        <p style="color:#1e3a5a;font-size:12px;margin:16px 0 0">
+          Valorix AI · Вы получили это письмо как зарегистрированный пользователь
+        </p>
+      </div>
+    </div>
+  `
+
+  // Отправка батчами по 50 с паузой 1.5с между батчами
+  const BATCH = 50
+  let sent = 0, failed = 0
+
+  for (let i = 0; i < users.length; i += BATCH) {
+    const batch = users.slice(i, i + BATCH)
+    const payload = JSON.stringify(
+      batch.map(u => ({
+        from: process.env.SMTP_FROM || 'Valorix AI <noreply@valorix.ru>',
+        to: [u.email],
+        subject,
+        html: buildHtml(u.username),
+      }))
+    )
+    try {
+      await new Promise((resolve, reject) => {
+        const req2 = https.request({
+          hostname: 'api.resend.com',
+          path: '/emails/batch',
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(payload),
+          },
+        }, r => {
+          let data = ''
+          r.on('data', c => data += c)
+          r.on('end', () => {
+            if (r.statusCode >= 400) { console.error('Resend batch error:', data); reject(new Error(data)) }
+            else { resolve() }
+          })
+        })
+        req2.on('error', reject)
+        req2.setTimeout(15000, () => { req2.destroy(); reject(new Error('timeout')) })
+        req2.write(payload)
+        req2.end()
+      })
+      sent += batch.length
+      console.log(`[newsletter] sent batch ${Math.floor(i/BATCH)+1}: ${sent}/${users.length}`)
+    } catch (err) {
+      console.error(`[newsletter] batch failed:`, err.message)
+      failed += batch.length
+    }
+    // Пауза между батчами чтобы не получить rate-limit
+    if (i + BATCH < users.length) await new Promise(r => setTimeout(r, 1500))
+  }
+
+  res.json({ sent, failed, total: users.length })
+})
+
 module.exports = router
