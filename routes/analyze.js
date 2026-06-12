@@ -997,18 +997,25 @@ ${cfg.searchItems}
 
     if (!analysis) return res.status(500).json({ error: 'Parse failed' })
 
-    // Убираем markdown-ссылки [text](url) → text, которые GPT-search вставляет как citations
-    const stripMd = (s) => typeof s === 'string'
-      ? s.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\s{2,}/g, ' ').trim()
-      : s
+    // Убираем markdown-ссылки [text](url) → text; принудительно строки
+    const stripMd = (s) => {
+      if (s === null || s === undefined) return s
+      const str = typeof s === 'object' ? JSON.stringify(s) : String(s)
+      return str.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\s{2,}/g, ' ').trim()
+    }
+    const forceStr = (s, fallback = '') => {
+      if (s === null || s === undefined) return fallback
+      if (typeof s === 'object') return fallback
+      return String(s)
+    }
 
     const result = {
       verdict:    stripMd(analysis.verdict)    || `Победа ${home}`,
       summary:    stripMd(analysis.summary)    || '',
       confidence: Math.min(90, Math.max(50, Number(analysis.confidence) || 65)),
-      risk:       analysis.risk       || 'medium',
-      fairOdds:   analysis.fairOdds   || '—',
-      bookOdds:   analysis.bookOdds   || null,
+      risk:       forceStr(analysis.risk, 'medium'),
+      fairOdds:   forceStr(analysis.fairOdds, '—') || '—',
+      bookOdds:   typeof analysis.bookOdds === 'string' ? analysis.bookOdds : null,
       value:      Number(analysis.value) || 0,
       reasons:    Array.isArray(analysis.reasons)   ? analysis.reasons.map(r => stripMd(r))   : [],
       extraBets:  Array.isArray(analysis.extraBets) ? analysis.extraBets.map(b => ({ ...b, type: stripMd(b.type), reason: stripMd(b.reason) })) : [],
