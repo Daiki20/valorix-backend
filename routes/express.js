@@ -131,7 +131,6 @@ function openAIRequest(messages) {
     const body = JSON.stringify({
       model: 'gpt-4o-search-preview',
       messages,
-      temperature: 0,
       max_tokens: 1200,
       web_search_options: { search_context_size: 'medium' },
     })
