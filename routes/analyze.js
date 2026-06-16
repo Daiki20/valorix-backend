@@ -37,8 +37,8 @@ function callOpenAIWithWebSearch(messages, max_tokens = 2000) {
       model: 'gpt-4o-search-preview',
       messages,
       max_tokens,
-      temperature: 0,
       web_search_options: { search_context_size: 'medium' },
+      // NOTE: temperature NOT included — gpt-4o-search-preview doesn't support it
     })
     const options = {
       hostname: 'api.openai.com',
