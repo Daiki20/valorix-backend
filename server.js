@@ -179,15 +179,6 @@ app.get('/rss.xml', (req, res) => {
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }))
 
-// Public stats — реальные цифры из базы для лендинга
-app.get('/stats', (req, res) => {
-  const db = require('./db')
-  const analyses = db.prepare('SELECT COUNT(*) as n FROM analyses').get().n
-  const users    = db.prepare('SELECT COUNT(*) as n FROM users WHERE is_blocked = 0').get().n
-  const articles = db.prepare('SELECT COUNT(*) as n FROM articles WHERE published = 1').get().n
-  res.json({ analyses, users, articles })
-})
-
 // ── Cron: ⚽ Football Lite at 00:05 MSK (21:05 UTC) ──────────────────────
 cron.schedule('5 21 * * *', async () => {
   const { generateExpressForDate, getTomorrowDate } = require('./routes/express')
