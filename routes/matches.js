@@ -170,7 +170,7 @@ async function lookupTeamImg(name, isNBA = false) {
     const teams = data?.teams || []
     if (!teams.length) { _setLogoCache(key, null, false); return null }
     const team = teams[0]
-    const url = team.strTeamBadge || team.strTeamLogo || null
+    const url = team.strBadge || team.strLogo || team.strTeamBadge || null
     _setLogoCache(key, url, !!url)
     return url
   } catch {
