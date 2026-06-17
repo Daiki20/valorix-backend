@@ -446,16 +446,11 @@ async function getFonbetSportEvents(rootSportId, limit = 20) {
       ev.awayImg = getNBALogo(ev.away) || null
     }
   } else {
-    // For non-NBA: attach already-cached logos, warm cache in background for the rest
+    // For non-NBA: always return logo URL — browser fetches /matches/logo?name=X on demand
     for (const ev of events) {
-      const hEntry = _teamImgCache.get((ev.home || '').toLowerCase().trim())
-      const aEntry = _teamImgCache.get((ev.away || '').toLowerCase().trim())
-      const now = Date.now()
-      ev.homeImg = (hEntry?.ok && now - hEntry.ts < TEAM_IMG_HIT_TTL) ? hEntry.url : null
-      ev.awayImg = (aEntry?.ok && now - aEntry.ts < TEAM_IMG_HIT_TTL) ? aEntry.url : null
+      ev.homeImg = ev.home ? `/matches/logo?name=${encodeURIComponent(ev.home)}` : null
+      ev.awayImg = ev.away ? `/matches/logo?name=${encodeURIComponent(ev.away)}` : null
     }
-    // Start background warm-up (non-blocking, won't delay response)
-    warmLogoCache(allTeamNames, false)
   }
 
   return events
@@ -606,22 +601,16 @@ router.get('/live-all', async (req, res) => {
       })
       .slice(0, 60)
 
-    // Enrich with logos (NBA instant, others from cache + background warm)
-    const now = Date.now()
+    // Enrich with logos
     for (const ev of liveEvents) {
       if (ev.sport === 'basketball') {
         ev.homeImg = getNBALogo(ev.home) || null
         ev.awayImg = getNBALogo(ev.away) || null
       } else {
-        const hEntry = _teamImgCache.get((ev.home || '').toLowerCase().trim())
-        const aEntry = _teamImgCache.get((ev.away || '').toLowerCase().trim())
-        ev.homeImg = (hEntry?.ok && now - hEntry.ts < TEAM_IMG_HIT_TTL) ? hEntry.url : null
-        ev.awayImg = (aEntry?.ok && now - aEntry.ts < TEAM_IMG_HIT_TTL) ? aEntry.url : null
+        ev.homeImg = ev.home ? `/matches/logo?name=${encodeURIComponent(ev.home)}` : null
+        ev.awayImg = ev.away ? `/matches/logo?name=${encodeURIComponent(ev.away)}` : null
       }
     }
-    // Background logo warm-up for non-basketball teams
-    const nonNBANames = liveEvents.filter(e => e.sport !== 'basketball').flatMap(e => [e.home, e.away])
-    warmLogoCache(nonNBANames, false)
 
     console.log(`[matches/live-all] ${liveEvents.length} live events`)
     res.json({ data: liveEvents })
@@ -664,6 +653,20 @@ router.get('/team-img/:teamId', (req, res) => {
   proxyReq.on('error', () => res.status(502).end())
   proxyReq.on('timeout', () => { proxyReq.destroy(); res.status(504).end() })
   proxyReq.end()
+})
+
+// GET /matches/logo?name=Arsenal — lookup logo by team name, redirect to CDN
+router.get('/logo', async (req, res) => {
+  const name = (req.query.name || '').trim()
+  if (!name) return res.status(400).end()
+  try {
+    const url = await lookupTeamImg(name)
+    if (url) {
+      res.setHeader('Cache-Control', 'public, max-age=604800')
+      return res.redirect(302, url)
+    }
+  } catch {}
+  res.status(404).end()
 })
 
 // GET /matches/fonbet-cache-reset — clear Fonbet cache
