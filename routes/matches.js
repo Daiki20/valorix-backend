@@ -42,9 +42,12 @@ const _logoUpsert = db.prepare(`
   ON CONFLICT(name_key) DO UPDATE SET url=excluded.url, ok=excluded.ok, ts=excluded.ts
 `)
 
-// On startup: load all valid logos from SQLite into memory (warm L1 instantly)
+// On startup: load valid logos from SQLite into memory, clear old SofaScore proxy URLs
 ;(function loadLogosFromDB() {
   try {
+    // Clear old /matches/team-img/* proxy URLs (were SofaScore, now defunct)
+    db.prepare("DELETE FROM team_logos WHERE url LIKE '/matches/team-img/%'").run()
+
     const rows = db.prepare('SELECT name_key, url, ok, ts FROM team_logos').all()
     let loaded = 0
     for (const row of rows) {
@@ -107,30 +110,21 @@ function getNBALogo(name) {
   return abbr ? `https://a.espncdn.com/i/teamlogos/nba/500/${abbr}.png` : null
 }
 
-// Sofascore search (free, no key) — returns Sofascore team image CDN URL
-function sofascoreSearchTeam(name) {
+// TheSportsDB search — free, no key, returns CDN logo URL
+function thesportsdbSearchTeam(name) {
   return new Promise((resolve) => {
-    const options = {
-      hostname: 'api.sofascore.com',
-      path: `/api/v1/search?q=${encodeURIComponent(name)}`,
+    const req = https.request({
+      hostname: 'www.thesportsdb.com',
+      path: `/api/v1/json/3/searchteams.php?t=${encodeURIComponent(name)}`,
       method: 'GET',
       timeout: 6000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8',
-        'Referer': 'https://www.sofascore.com/',
-        'Origin': 'https://www.sofascore.com',
-        'Cache-Control': 'no-cache',
-      },
-    }
-    const req = https.request(options, res => {
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
+    }, res => {
       let data = ''
       res.on('data', c => data += c)
       res.on('end', () => {
         if (res.statusCode !== 200) { resolve(null); return }
-        try { resolve(JSON.parse(data)) }
-        catch { resolve(null) }
+        try { resolve(JSON.parse(data)) } catch { resolve(null) }
       })
     })
     req.on('error', () => resolve(null))
@@ -139,7 +133,7 @@ function sofascoreSearchTeam(name) {
   })
 }
 
-// Lookup logo for ONE team name — NBA instant, others via Sofascore
+// Lookup logo for ONE team name — NBA instant, others via TheSportsDB
 async function lookupTeamImg(name, isNBA = false) {
   if (!name) return null
   const key = name.toLowerCase().trim()
@@ -149,7 +143,7 @@ async function lookupTeamImg(name, isNBA = false) {
   const ttl = cached?.ok ? TEAM_IMG_HIT_TTL : TEAM_IMG_MISS_TTL
   if (cached && Date.now() - cached.ts < ttl) return cached.url
 
-  // L2: SQLite (in case memory was cleared but DB has it)
+  // L2: SQLite
   if (!cached) {
     try {
       const row = _logoGet.get(key)
@@ -163,22 +157,21 @@ async function lookupTeamImg(name, isNBA = false) {
     } catch { /* non-critical */ }
   }
 
-  // NBA: use ESPN CDN instantly (no network call)
+  // NBA: ESPN CDN instantly
   if (isNBA) {
     const url = getNBALogo(name)
     _setLogoCache(key, url, !!url)
     return url
   }
 
-  // Others: Sofascore search
+  // Others: TheSportsDB (free, no auth, works from Railway)
   try {
-    const data = await sofascoreSearchTeam(name)
+    const data = await thesportsdbSearchTeam(name)
     const teams = data?.teams || []
     if (!teams.length) { _setLogoCache(key, null, false); return null }
-    const team = teams.find(t => t.id) || teams[0]
-    if (!team?.id) { _setLogoCache(key, null, false); return null }
-    const url = `/matches/team-img/${team.id}`
-    _setLogoCache(key, url, true)
+    const team = teams[0]
+    const url = team.strTeamBadge || team.strTeamLogo || null
+    _setLogoCache(key, url, !!url)
     return url
   } catch {
     _setLogoCache(key, null, false)
