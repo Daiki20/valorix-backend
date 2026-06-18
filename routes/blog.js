@@ -162,6 +162,104 @@ function commitStaticToGithub(article) {
   })
 }
 
+// ── Generate and commit sitemap.xml to GitHub ────────────────────────────────
+function commitSitemapToGithub() {
+  const token = process.env.GITHUB_TOKEN
+  if (!token) return Promise.resolve({ skipped: true })
+
+  let articles
+  try {
+    articles = db.prepare(`
+      SELECT slug, updated_at, created_at FROM articles
+      WHERE published = 1 ORDER BY created_at DESC
+    `).all()
+  } catch (e) {
+    return Promise.resolve({ error: e.message })
+  }
+
+  const now = new Date().toISOString().slice(0, 10)
+  const staticPages = [
+    { loc: 'https://valorix.ru/', priority: '1.0', changefreq: 'daily' },
+    { loc: 'https://valorix.ru/blog/', priority: '0.9', changefreq: 'daily' },
+    { loc: 'https://valorix.ru/analyze/', priority: '0.9', changefreq: 'weekly' },
+  ]
+
+  const urlEntries = [
+    ...staticPages.map(p => `  <url>
+    <loc>${p.loc}</loc>
+    <changefreq>${p.changefreq}</changefreq>
+    <priority>${p.priority}</priority>
+    <lastmod>${now}</lastmod>
+  </url>`),
+    ...articles.map(a => {
+      const lastmod = (a.updated_at || a.created_at || now).slice(0, 10)
+      return `  <url>
+    <loc>https://valorix.ru/blog/${a.slug}/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+    <lastmod>${lastmod}</lastmod>
+  </url>`
+    }),
+  ]
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urlEntries.join('\n')}
+</urlset>`
+
+  const contentB64 = Buffer.from(xml, 'utf8').toString('base64')
+  const path = 'public/sitemap.xml'
+
+  return new Promise((resolve) => {
+    const getOpts = {
+      hostname: 'api.github.com',
+      path: `/repos/${GITHUB_REPO}/contents/${path}`,
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}`, 'User-Agent': 'valorix-backend', 'Accept': 'application/vnd.github.v3+json' },
+      timeout: 10000,
+    }
+    const getReq = https.request(getOpts, getRes => {
+      let d = ''
+      getRes.on('data', c => d += c)
+      getRes.on('end', () => {
+        let sha = null
+        if (getRes.statusCode === 200) { try { sha = JSON.parse(d).sha } catch {} }
+        const body = JSON.stringify({
+          message: `seo: update sitemap.xml (${articles.length} articles)`,
+          content: contentB64,
+          ...(sha ? { sha } : {}),
+        })
+        const putOpts = {
+          hostname: 'api.github.com',
+          path: `/repos/${GITHUB_REPO}/contents/${path}`,
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${token}`, 'User-Agent': 'valorix-backend',
+            'Accept': 'application/vnd.github.v3+json',
+            'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
+          },
+          timeout: 20000,
+        }
+        const putReq = https.request(putOpts, putRes => {
+          let pd = ''
+          putRes.on('data', c => pd += c)
+          putRes.on('end', () => {
+            console.log(`[sitemap] committed ${articles.length} URLs → HTTP ${putRes.statusCode}`)
+            resolve({ status: putRes.statusCode, count: articles.length })
+          })
+        })
+        putReq.on('error', e => { console.warn('[sitemap] put error:', e.message); resolve({ error: e.message }) })
+        putReq.on('timeout', () => { putReq.destroy(); resolve({ error: 'timeout' }) })
+        putReq.write(body)
+        putReq.end()
+      })
+    })
+    getReq.on('error', () => resolve({ error: 'get failed' }))
+    getReq.on('timeout', () => { getReq.destroy(); resolve({ error: 'get timeout' }) })
+    getReq.end()
+  })
+}
+
 function pingIndexNow(slug) {
   const url = `https://${SITE_HOST}/blog/${slug}`
   const body = JSON.stringify({
@@ -458,6 +556,7 @@ router.post('/', authenticate, (req, res) => {
   if (article.published) {
     pingIndexNow(article.slug)
     commitStaticToGithub(article).catch(e => console.warn('[github]', e.message))
+    commitSitemapToGithub().catch(e => console.warn('[sitemap]', e.message))
   }
   res.json(article)
 })
@@ -646,6 +745,7 @@ router.put('/:id', authenticate, (req, res) => {
   if (updated.published) {
     pingIndexNow(updated.slug)
     commitStaticToGithub(updated).catch(e => console.warn('[github]', e.message))
+    commitSitemapToGithub().catch(e => console.warn('[sitemap]', e.message))
   }
   res.json(updated)
 })
@@ -657,7 +757,15 @@ router.post('/push-static/:id', authenticate, async (req, res) => {
   if (!article) return res.status(404).json({ error: 'Статья не найдена' })
   if (!article.published) return res.status(400).json({ error: 'Статья не опубликована' })
   const result = await commitStaticToGithub(article)
+  commitSitemapToGithub().catch(e => console.warn('[sitemap]', e.message))
   res.json({ success: true, slug: article.slug, github: result })
+})
+
+// POST /blog/generate-sitemap — вручную перегенерировать sitemap.xml
+router.post('/generate-sitemap', authenticate, async (req, res) => {
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Нет доступа' })
+  const result = await commitSitemapToGithub()
+  res.json({ success: !result.error, ...result })
 })
 
 // DELETE /blog/:id
