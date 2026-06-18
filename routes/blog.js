@@ -499,4 +499,86 @@ router.delete('/:id', authenticate, (req, res) => {
   res.json({ success: true })
 })
 
+// POST /blog/generate-custom — AI генерирует статью на произвольную тему
+router.post('/generate-custom', authenticate, async (req, res) => {
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Нет доступа' })
+
+  const { topic, sport = 'other' } = req.body
+  if (!topic?.trim()) return res.status(400).json({ error: 'Нужна тема статьи (topic)' })
+
+  try {
+    // Шаг 1: web-search для сбора актуальных фактов по теме
+    const year = new Date().getFullYear()
+    let facts = null
+    const factsCacheKey = `custom_facts_${normalize(topic)}`
+    const cached = blogCacheGet(factsCacheKey)
+    if (cached) { try { facts = cached } catch {} }
+
+    if (!facts) {
+      try {
+        facts = await callOpenAIWithWebSearch([
+          { role: 'system', content: 'Ты спортивный аналитик. Ищи реальные данные в интернете. Отвечай на русском.' },
+          { role: 'user', content: `Найди актуальную информацию за ${year} год по теме: "${topic}". Собери ключевые факты, статистику, мнения экспертов, последние новости. Дай структурированный ответ с конкретными данными.` },
+        ], 1500)
+        blogCacheSet(factsCacheKey, facts)
+      } catch (e) {
+        console.warn('[blog/generate-custom] web search failed:', e.message)
+        facts = ''
+      }
+    }
+
+    // Шаг 2: генерируем статью в стиле Valorix
+    const prompt = `Ты опытный спортивный журналист сайта Valorix.ru — сервиса AI-анализа матчей. Напиши SEO-статью на русском языке.
+
+ТЕМА: ${topic}
+ВИД СПОРТА: ${sport}
+${facts ? `\nАКТУАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА:\n${facts}` : ''}
+
+ТРЕБОВАНИЯ:
+1. Заголовок — цепляющий, SEO-оптимизированный, отражает тему
+2. Структура (## для заголовков, БЕЗ emoji в заголовках):
+   ## Текущее положение дел (2-3 предложения — контекст, актуальность)
+   ## Главные претенденты (разбор фаворитов с фактами)
+   ## Тёмные лошадки (кто может удивить)
+   ## Прогноз Valorix AI (СТРОГО по шаблону ниже!)
+   ## Итог (1-2 предложения с выводом)
+3. В разделе "Прогноз Valorix AI" СТРОГО этот формат (строки подряд, БЕЗ пустых строк):
+   🤖 **Valorix AI прогнозирует:**
+   ✅ Фаворит: [назови главного фаворита на основе фактов]
+   🔒 Ставка на победителя**************
+   🔒 Тотал карт/фрагов*****************
+4. CTA в конце:
+   > 🔍 Хочешь AI-анализ конкретного матча? → [Анализируй на Valorix](https://valorix.ru/analyze)
+5. Длина: 500-700 слов. Стиль живой, уникальный, экспертный.
+6. НЕ используй emoji в заголовках (##) и внутри слов. Emoji только в блоке прогноза и CTA.
+
+Ответь ТОЛЬКО текстом статьи в Markdown.`
+
+    const rawContent = await openAIChat([
+      { role: 'system', content: 'Ты спортивный журналист Valorix.ru. Пиши живо, по-русски, уникально. Не вставляй emoji в заголовки.' },
+      { role: 'user', content: prompt },
+    ])
+
+    const content = sanitizeArticleContent(rawContent)
+    const lines = content.trim().split('\n')
+    const titleLine = lines[0].replace(/^#+\s*/, '').trim()
+    const articleContent = lines.slice(1).join('\n').trim()
+    const excerpt = `${topic}. Анализ и прогноз от Valorix AI.`
+
+    const slug = ensureUniqueSlug(slugify(titleLine))
+    const result = db.prepare(`
+      INSERT INTO articles (slug, title, excerpt, content, meta_title, meta_desc, published, sport)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+    `).run(slug, titleLine, excerpt, articleContent, titleLine, excerpt, sport)
+
+    const article = db.prepare('SELECT * FROM articles WHERE id = ?').get(result.lastInsertRowid)
+    console.log(`[blog] Generated custom article "${titleLine}" (sport: ${sport})`)
+    res.json({ article })
+
+  } catch (err) {
+    console.error('[blog/generate-custom]', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
 module.exports = router
