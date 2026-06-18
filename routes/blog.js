@@ -7,6 +7,160 @@ const { authenticate } = require('../middleware/auth')
 // ── IndexNow — instant ping to Bing/Yandex/Google on article publish ─────────
 const INDEXNOW_KEY  = '4997fa57db99748cb057e61f8b467535'
 const SITE_HOST     = 'valorix.ru'
+const GITHUB_REPO   = process.env.GITHUB_REPO || 'Daiki20/valorix-frontend'
+
+// ── Generate static HTML for an article ──────────────────────────────────────
+function generateStaticHtml(article) {
+  const e = (s) => (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+  const title    = e(article.title || '')
+  const desc     = e(article.excerpt || article.meta_desc || '')
+  const canonical = `https://valorix.ru/blog/${e(article.slug)}`
+  const cover    = article.cover_url ? e(article.cover_url) : ''
+  const dateStr  = new Date(article.created_at).toLocaleDateString('ru-RU', {day:'numeric',month:'long',year:'numeric'})
+  const sportBadge = article.sport && article.sport !== 'other'
+    ? `<span class="badge">${{football:'⚽ Футбол',hockey:'🏒 Хоккей',cs2:'🔫 CS2',dota2:'🎮 Dota 2'}[article.sport] || article.sport}</span>`
+    : ''
+  const bodyHtml = (article.content || '')
+    .replace(/!\[([^\]]*)\]\([^\)]+\)/g, '')
+    .replace(/\[([^\]]+)\]\(([^\)]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/^#{1,6}\s+(.+)$/gm, '<h2>$1</h2>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/^[-*]\s+(.+)$/gm, '<li>$1</li>')
+    .replace(/(<li>.*<\/li>\n?)+/g, s => `<ul>${s}</ul>`)
+    .replace(/^>\s+(.+)$/gm, '<blockquote>$1</blockquote>')
+    .replace(/\n{2,}/g, '</p><p>')
+    .replace(/^(?!<[hublp])(.+)$/gm, '$1')
+  const schema = JSON.stringify({
+    '@context':'https://schema.org','@type':'Article',
+    headline: article.title, description: article.excerpt || '',
+    image: article.cover_url || undefined,
+    datePublished: article.created_at, dateModified: article.updated_at,
+    author:{'@type':'Organization',name:'Valorix AI'},
+    publisher:{'@type':'Organization',name:'Valorix AI',url:'https://valorix.ru'},
+    mainEntityOfPage:{'@type':'WebPage','@id':canonical}
+  })
+  const preloaded = JSON.stringify({id:article.id,slug:article.slug,title:article.title,sport:article.sport})
+    .replace(/</g,'\\u003c').replace(/>/g,'\\u003e').replace(/&/g,'\\u0026')
+
+  return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title} — Valorix AI</title>
+  <meta name="description" content="${desc}">
+  <meta property="og:title" content="${title}">
+  <meta property="og:description" content="${desc}">
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="${canonical}">
+  <meta property="og:site_name" content="Valorix AI">
+  ${cover ? `<meta property="og:image" content="${cover}">` : ''}
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="${title}">
+  <meta name="twitter:description" content="${desc}">
+  ${cover ? `<meta name="twitter:image" content="${cover}">` : ''}
+  <link rel="canonical" href="${canonical}">
+  <script type="application/ld+json">${schema}</script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#030b18;color:#d8eeff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.7;padding:2rem 1rem}
+    .wrap{max-width:760px;margin:0 auto}
+    a{color:#00cfff;text-decoration:none}
+    h1{font-size:clamp(1.6rem,4vw,2.2rem);font-weight:900;margin:1rem 0 1.5rem;line-height:1.2;color:#fff}
+    h2{font-size:1.3rem;font-weight:800;color:#fff;margin:2rem 0 0.8rem;border-bottom:1px solid rgba(0,207,255,0.15);padding-bottom:.4rem}
+    p{color:#94a3b8;margin-bottom:1rem;font-size:.98rem}
+    strong{color:#00cfff;font-weight:700}
+    ul{color:#94a3b8;padding-left:1.5rem;margin-bottom:1rem}
+    li{margin-bottom:.3rem}
+    blockquote{border-left:3px solid #00cfff;padding:.5rem 1rem;background:rgba(0,207,255,0.05);margin:1rem 0;color:#94a3b8;border-radius:0 8px 8px 0}
+    .meta{color:#475569;font-size:.85rem;margin-bottom:2rem;display:flex;gap:1rem;flex-wrap:wrap}
+    .badge{background:rgba(34,197,94,.1);color:#4ade80;padding:3px 12px;border-radius:20px;font-size:.75rem;font-weight:700;border:1px solid rgba(34,197,94,.2)}
+    .cta{margin-top:3rem;padding:1.5rem;background:rgba(0,207,255,.06);border:1px solid rgba(0,207,255,.2);border-radius:16px;text-align:center}
+    .cta a{display:inline-block;background:linear-gradient(135deg,#00cfff,#6366f1);color:#000;font-weight:800;padding:.8rem 2rem;border-radius:12px;font-size:.95rem;margin-top:.8rem}
+    nav{margin-bottom:2rem}
+    ${cover ? 'img.cover{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:16px;margin-bottom:1.5rem;border:1px solid rgba(0,207,255,.15)}' : ''}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav><a href="https://valorix.ru">← Valorix AI</a> / <a href="https://valorix.ru/blog">Блог</a></nav>
+    ${cover ? `<img class="cover" src="${cover}" alt="${title}" loading="eager">` : ''}
+    <h1>${title}</h1>
+    <div class="meta"><span>${dateStr}</span>${sportBadge}</div>
+    ${desc ? `<p><em>${desc}</em></p>` : ''}
+    <div>${bodyHtml}</div>
+    <div class="cta">
+      <p>Хочешь AI-анализ любого матча?</p>
+      <a href="https://valorix.ru/analyze">Попробовать бесплатно →</a>
+    </div>
+  </div>
+  <script>
+    fetch('https://web-production-fefcd.up.railway.app/blog/${article.slug}').catch(()=>{});
+    window.__PRELOADED_ARTICLE__ = ${preloaded};
+  </script>
+</body>
+</html>`
+}
+
+// ── Commit static HTML to GitHub repo (triggers gh-pages rebuild) ─────────────
+function commitStaticToGithub(article) {
+  const token = process.env.GITHUB_TOKEN
+  if (!token) { console.warn('[github] GITHUB_TOKEN not set'); return Promise.resolve({ skipped: true }) }
+  const path = `public/blog/${article.slug}/index.html`
+  const htmlContent = generateStaticHtml(article)
+  const contentB64 = Buffer.from(htmlContent, 'utf8').toString('base64')
+
+  return new Promise((resolve) => {
+    // Get existing SHA if file already exists
+    const getOpts = {
+      hostname: 'api.github.com',
+      path: `/repos/${GITHUB_REPO}/contents/${path}`,
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}`, 'User-Agent': 'valorix-backend', 'Accept': 'application/vnd.github.v3+json' },
+      timeout: 10000,
+    }
+    const getReq = https.request(getOpts, getRes => {
+      let d = ''
+      getRes.on('data', c => d += c)
+      getRes.on('end', () => {
+        let sha = null
+        if (getRes.statusCode === 200) { try { sha = JSON.parse(d).sha } catch {} }
+        const body = JSON.stringify({
+          message: `blog: static HTML for "${article.title}"`,
+          content: contentB64,
+          ...(sha ? { sha } : {}),
+        })
+        const putOpts = {
+          hostname: 'api.github.com',
+          path: `/repos/${GITHUB_REPO}/contents/${path}`,
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${token}`, 'User-Agent': 'valorix-backend',
+            'Accept': 'application/vnd.github.v3+json',
+            'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
+          },
+          timeout: 20000,
+        }
+        const putReq = https.request(putOpts, putRes => {
+          let pd = ''
+          putRes.on('data', c => pd += c)
+          putRes.on('end', () => {
+            console.log(`[github] static HTML for ${article.slug} → HTTP ${putRes.statusCode}`)
+            resolve({ status: putRes.statusCode })
+          })
+        })
+        putReq.on('error', e => { console.warn('[github] put error:', e.message); resolve({ error: e.message }) })
+        putReq.on('timeout', () => { putReq.destroy(); resolve({ error: 'timeout' }) })
+        putReq.write(body)
+        putReq.end()
+      })
+    })
+    getReq.on('error', () => resolve({ error: 'get failed' }))
+    getReq.on('timeout', () => { getReq.destroy(); resolve({ error: 'get timeout' }) })
+    getReq.end()
+  })
+}
 
 function pingIndexNow(slug) {
   const url = `https://${SITE_HOST}/blog/${slug}`
@@ -301,8 +455,10 @@ router.post('/', authenticate, (req, res) => {
   `).run(slug, title.trim(), excerpt || '', content.trim(), meta_title || title.trim(), meta_desc || excerpt || '', cover_url || '', published ? 1 : 0, sport || 'other', match_key || null)
 
   const article = db.prepare('SELECT * FROM articles WHERE id = ?').get(result.lastInsertRowid)
-  // Пингуем IndexNow если статья опубликована
-  if (article.published) pingIndexNow(article.slug)
+  if (article.published) {
+    pingIndexNow(article.slug)
+    commitStaticToGithub(article).catch(e => console.warn('[github]', e.message))
+  }
   res.json(article)
 })
 
@@ -446,6 +602,7 @@ ${lockedBets}
 
     const article = db.prepare('SELECT * FROM articles WHERE id = ?').get(result.lastInsertRowid)
     console.log(`[blog] Generated article for ${home} vs ${away} (${sport}): "${titleLine}"`)
+    if (article.published) commitStaticToGithub(article).catch(e => console.warn('[github]', e.message))
     res.json({ article })
 
   } catch (err) {
@@ -486,9 +643,21 @@ router.put('/:id', authenticate, (req, res) => {
   )
 
   const updated = db.prepare('SELECT * FROM articles WHERE id = ?').get(id)
-  // Пингуем IndexNow если статья опубликована
-  if (updated.published) pingIndexNow(updated.slug)
+  if (updated.published) {
+    pingIndexNow(updated.slug)
+    commitStaticToGithub(updated).catch(e => console.warn('[github]', e.message))
+  }
   res.json(updated)
+})
+
+// POST /blog/push-static/:id — вручную запушить статический HTML для любой статьи
+router.post('/push-static/:id', authenticate, async (req, res) => {
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Нет доступа' })
+  const article = db.prepare('SELECT * FROM articles WHERE id = ?').get(parseInt(req.params.id))
+  if (!article) return res.status(404).json({ error: 'Статья не найдена' })
+  if (!article.published) return res.status(400).json({ error: 'Статья не опубликована' })
+  const result = await commitStaticToGithub(article)
+  res.json({ success: true, slug: article.slug, github: result })
 })
 
 // DELETE /blog/:id
@@ -573,6 +742,7 @@ ${facts ? `\nАКТУАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА:\n${facts
 
     const article = db.prepare('SELECT * FROM articles WHERE id = ?').get(result.lastInsertRowid)
     console.log(`[blog] Generated custom article "${titleLine}" (sport: ${sport})`)
+    if (article.published) commitStaticToGithub(article).catch(e => console.warn('[github]', e.message))
     res.json({ article })
 
   } catch (err) {
