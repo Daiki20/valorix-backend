@@ -146,14 +146,8 @@ router.post('/register', async (req, res) => {
     return res.status(400).json({ error: 'Пожалуйста, используйте настоящий email адрес' })
   }
 
-  // ── Лимит регистраций с одного IP (максимум 2) ──────────────────────────────
-  if (ip !== 'unknown') {
-    const ipCount = db.prepare('SELECT COUNT(*) as n FROM users WHERE reg_ip = ? AND is_verified = 1').get(ip)
-    if (ipCount.n >= 2) {
-      console.log(`[register] IP limit reached: ${ip} (${ipCount.n} accounts)`)
-      return res.status(429).json({ error: 'С этого устройства уже зарегистрировано максимальное количество аккаунтов' })
-    }
-  }
+  // IP-счётчик для определения бонуса при верификации (блокировка снята)
+  // логика монет: 1-я регистрация → 38, повторные → 10
 
   const existing = db.prepare('SELECT id, is_verified FROM users WHERE email = ?').get(email)
   if (existing) {
@@ -197,19 +191,23 @@ router.post('/verify-email', async (req, res) => {
     return res.status(400).json({ error: 'Код устарел. Запросите новый.' })
   }
 
-  // Бонус только если с этого IP ещё не получали (защита от мультиаккаунтов)
   const userIp = user.reg_ip || 'unknown'
   const ipBonusCount = userIp !== 'unknown'
     ? db.prepare("SELECT COUNT(*) as n FROM users WHERE reg_ip = ? AND is_verified = 1 AND id != ?").get(userIp, user.id).n
     : 0
-  const welcomeCoins = ipBonusCount === 0 ? 38 : 3 // уже получали бонус с этого IP — только 3 монеты
+  const isRepeat = ipBonusCount > 0
+  const welcomeCoins = isRepeat ? 10 : 38
 
   db.prepare('UPDATE users SET is_verified = 1, coins = ?, verification_code = NULL, verification_code_exp = NULL WHERE id = ?').run(welcomeCoins, user.id)
-  db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(user.id, welcomeCoins, 'bonus', welcomeCoins === 38 ? 'Приветственный бонус' : 'Бонус при регистрации')
+  db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(user.id, welcomeCoins, 'bonus', isRepeat ? 'Бонус при регистрации (повторная)' : 'Приветственный бонус')
+
+  if (isRepeat) {
+    console.log(`[register] repeat IP bonus: ${userIp} (${ipBonusCount} existing accounts) — 10 coins`)
+  }
 
   const updated = db.prepare('SELECT id, email, username, coins, is_admin, is_blocked, is_verified FROM users WHERE id = ?').get(user.id)
   const token = makeToken(updated.id)
-  res.json({ token, user: updated })
+  res.json({ token, user: updated, abuseWarning: isRepeat })
 })
 
 // POST /auth/resend-code
