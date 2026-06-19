@@ -191,23 +191,14 @@ router.post('/verify-email', async (req, res) => {
     return res.status(400).json({ error: 'Код устарел. Запросите новый.' })
   }
 
-  const userIp = user.reg_ip || 'unknown'
-  const ipBonusCount = userIp !== 'unknown'
-    ? db.prepare("SELECT COUNT(*) as n FROM users WHERE reg_ip = ? AND is_verified = 1 AND id != ?").get(userIp, user.id).n
-    : 0
-  const isRepeat = ipBonusCount > 0
-  const welcomeCoins = isRepeat ? 10 : 38
+  const welcomeCoins = 15
 
   db.prepare('UPDATE users SET is_verified = 1, coins = ?, verification_code = NULL, verification_code_exp = NULL WHERE id = ?').run(welcomeCoins, user.id)
-  db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(user.id, welcomeCoins, 'bonus', isRepeat ? 'Бонус при регистрации (повторная)' : 'Приветственный бонус')
-
-  if (isRepeat) {
-    console.log(`[register] repeat IP bonus: ${userIp} (${ipBonusCount} existing accounts) — 10 coins`)
-  }
+  db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(user.id, welcomeCoins, 'bonus', 'Приветственный бонус за регистрацию')
 
   const updated = db.prepare('SELECT id, email, username, coins, is_admin, is_blocked, is_verified FROM users WHERE id = ?').get(user.id)
   const token = makeToken(updated.id)
-  res.json({ token, user: updated, abuseWarning: isRepeat })
+  res.json({ token, user: updated })
 })
 
 // POST /auth/resend-code
