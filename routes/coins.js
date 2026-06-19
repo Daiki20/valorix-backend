@@ -184,11 +184,22 @@ router.post('/yukassa-webhook', (req, res) => {
     return res.sendStatus(400)
   }
 
+  // Проверяем не зачислено ли уже (защита от двойного зачисления)
+  const alreadyDone = db.prepare('SELECT id FROM pending_payments WHERE id = ? AND status = ?')
+    .get(event.object.id, 'done')
+  if (alreadyDone) {
+    console.log(`[webhook] already credited: ${event.object.id}`)
+    return res.sendStatus(200)
+  }
+
   db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(coins, userId)
+  db.prepare('INSERT OR IGNORE INTO pending_payments (id, user_id, coins, package_id, status) VALUES (?, ?, ?, ?, ?)')
+    .run(event.object.id, userId, coins, metadata.packageId || '', 'done')
+  db.prepare('UPDATE pending_payments SET status = ? WHERE id = ?').run('done', event.object.id)
   db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description, payment_id) VALUES (?, ?, ?, ?, ?)')
     .run(userId, coins, 'purchase', `Пополнение ${coins} монет`, event.object.id)
 
-  console.log(`Payment: user ${userId} got ${coins} coins`)
+  console.log(`[webhook] Payment: user ${userId} got ${coins} coins`)
   res.sendStatus(200)
 })
 
