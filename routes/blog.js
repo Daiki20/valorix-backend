@@ -92,7 +92,7 @@ function generateStaticHtml(article) {
     <div>${bodyHtml}</div>
     <div class="cta">
       <p>Хочешь AI-анализ любого матча?</p>
-      <a href="https://valorix.ru/analyze">Попробовать бесплатно →</a>
+      <a href="https://valorix.ru/analyze">Анализ со скидкой →</a>
     </div>
   </div>
   <script>
