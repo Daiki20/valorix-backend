@@ -54,7 +54,7 @@ router.get('/stats', (req, res) => {
   ).get().c
 
   const recentUsers = db.prepare(
-    'SELECT id, email, username, coins, is_admin, is_blocked, created_at FROM users ORDER BY created_at DESC LIMIT 5'
+    'SELECT id, email, username, coins, is_admin, is_blocked, created_at, promo_code FROM users ORDER BY created_at DESC LIMIT 5'
   ).all()
 
   res.json({ totalUsers, totalAnalyses, totalCoinsSpent, todayUsers, todayAnalyses, revenue, recentUsers })
@@ -70,7 +70,7 @@ router.get('/users', (req, res) => {
 
   const users = db.prepare(`
     SELECT u.id, u.email, u.username, u.coins, u.is_admin, u.is_blocked, u.created_at,
-           COUNT(a.id) as analyses_count
+           u.promo_code, COUNT(a.id) as analyses_count
     FROM users u
     LEFT JOIN analyses a ON a.user_id = u.id
     WHERE u.email LIKE ? OR u.username LIKE ?
