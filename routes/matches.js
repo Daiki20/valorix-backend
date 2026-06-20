@@ -577,10 +577,28 @@ router.get('/live-all', async (req, res) => {
     const liveEvents = (data.events || [])
       .filter(e => e.level === 1 && e.team1 && e.team2 && e.place === 'live')
       .filter(e => KNOWN_ROOT_IDS.has(tree[e.sportId]))
-      .map(e => {
+      .map((e, i) => {
+        if (i === 0) console.log('[fonbet live debug]', JSON.stringify(e).slice(0, 500))
         const rootId = tree[e.sportId]
         const league = leagueNames[e.sportId] || ''
         const sport = rootId === FONBET_SPORT_IDS.esports ? detectEsportType(league) : (sportKeyMap[rootId] || 'other')
+
+        // Extract live score — Fonbet uses score1/score2 (numeric) on live events
+        const scoreHome = e.score1 ?? e.scoreHome ?? null
+        const scoreAway = e.score2 ?? e.scoreAway ?? null
+        const score = (scoreHome != null && scoreAway != null) ? `${scoreHome}:${scoreAway}` : null
+
+        // Extract timer — Fonbet timer is elapsed seconds from kick-off
+        let minute = null
+        if (e.timer != null) {
+          // timer can be seconds (number) or object with seconds field
+          const secs = typeof e.timer === 'object' ? (e.timer.seconds ?? e.timer.s ?? null) : Number(e.timer)
+          if (secs != null && !isNaN(secs)) minute = Math.floor(secs / 60)
+        }
+
+        // Period/half
+        const period = e.period ?? e.periodNumber ?? null
+
         return {
           id: `fonbet_live_${e.id}`,
           fonbetId: e.id,
@@ -589,6 +607,9 @@ router.get('/live-all', async (req, res) => {
           date: fonbetFormatDate(e.startTime),
           rawDate: new Date(e.startTime * 1000).toISOString(),
           isLive: true,
+          score,
+          minute,
+          period,
           odds1x2: oddsMap[e.id] || null,
         }
       })
