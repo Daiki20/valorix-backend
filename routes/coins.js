@@ -15,6 +15,14 @@ const PACKAGES = [
   { id: 'pack_1000', coins: 1000, price: 700,  label: '1000 монет', bonus: 'Скидка 30%' },
 ]
 
+const VALID_PROMOS = { valor: 28 } // code.toLowerCase() → bonus coins
+
+function resolvePromo(raw) {
+  const code = (raw || '').trim().toLowerCase()
+  const bonus = VALID_PROMOS[code]
+  return bonus ? { code: code.toUpperCase(), bonus } : null
+}
+
 function yukassaRequest(method, path, body) {
   return new Promise((resolve, reject) => {
     const shopId = process.env.YUKASSA_SHOP_ID
@@ -64,10 +72,11 @@ router.get('/balance', authenticate, (req, res) => {
 
 // POST /coins/create-payment — создать платёж в ЮКассе
 router.post('/create-payment', authenticate, async (req, res) => {
-  const { packageId, paymentMethod } = req.body
+  const { packageId, paymentMethod, promoCode } = req.body
   const pkg = PACKAGES.find(p => p.id === packageId)
   if (!pkg) return res.status(400).json({ error: 'Неверный пакет' })
 
+  const promo = resolvePromo(promoCode)
   const allowedMethods = ['bank_card', 'sbp', 'sberbank', 'tinkoff_bank']
   const method = allowedMethods.includes(paymentMethod) ? paymentMethod : null
 
@@ -80,8 +89,13 @@ router.post('/create-payment', authenticate, async (req, res) => {
         return_url: `${frontendUrl}/payment-return`,
       },
       capture: true,
-      description: `Valorix AI — ${pkg.label}`,
-      metadata: { userId: String(req.user.id), coins: String(pkg.coins), packageId: pkg.id },
+      description: `Valorix AI — ${pkg.label}${promo ? ` + промокод ${promo.code}` : ''}`,
+      metadata: {
+        userId: String(req.user.id),
+        coins: String(pkg.coins),
+        packageId: pkg.id,
+        ...(promo ? { promoCode: promo.code, promoBonus: String(promo.bonus) } : {}),
+      },
     }
     if (method) paymentBody.payment_method_data = { type: method }
     const payment = await yukassaRequest('POST', '/payments', paymentBody)
@@ -89,7 +103,12 @@ router.post('/create-payment', authenticate, async (req, res) => {
     db.prepare('INSERT OR IGNORE INTO pending_payments (id, user_id, coins, package_id) VALUES (?, ?, ?, ?)')
       .run(payment.id, req.user.id, pkg.coins, pkg.id)
 
-    res.json({ confirmationUrl: payment.confirmation.confirmation_url, paymentId: payment.id })
+    res.json({
+      confirmationUrl: payment.confirmation.confirmation_url,
+      paymentId: payment.id,
+      promoApplied: !!promo,
+      promoBonus: promo ? promo.bonus : 0,
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -123,15 +142,23 @@ router.get('/verify-payment/:paymentId', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Ошибка верификации платежа' })
     }
 
-    db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(coins, req.user.id)
+    const promoCode = payment.metadata?.promoCode || null
+    const promoBonus = promoCode ? parseInt(payment.metadata?.promoBonus || '0', 10) : 0
+    const totalCoins = coins + (promoBonus > 0 ? promoBonus : 0)
+
+    db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(totalCoins, req.user.id)
     db.prepare('INSERT OR IGNORE INTO pending_payments (id, user_id, coins, package_id, status) VALUES (?, ?, ?, ?, ?)')
       .run(paymentId, req.user.id, coins, payment.metadata?.packageId || '', 'done')
     db.prepare('UPDATE pending_payments SET status = ? WHERE id = ?').run('done', paymentId)
     db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description, payment_id) VALUES (?, ?, ?, ?, ?)')
       .run(req.user.id, coins, 'purchase', `Пополнение ${coins} монет`, paymentId)
+    if (promoBonus > 0) {
+      db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description, payment_id) VALUES (?, ?, ?, ?, ?)')
+        .run(req.user.id, promoBonus, 'bonus', `Бонус по промокоду ${promoCode}: +${promoBonus} монет`, paymentId)
+    }
 
     const user = db.prepare('SELECT coins FROM users WHERE id = ?').get(req.user.id)
-    res.json({ status: 'credited', coins: user?.coins ?? 0 })
+    res.json({ status: 'credited', coins: user?.coins ?? 0, promoBonus: promoBonus > 0 ? promoBonus : 0 })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -192,14 +219,22 @@ router.post('/yukassa-webhook', (req, res) => {
     return res.sendStatus(200)
   }
 
-  db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(coins, userId)
+  const promoCode = metadata.promoCode || null
+  const promoBonus = promoCode ? parseInt(metadata.promoBonus || '0', 10) : 0
+  const totalCoins = coins + (promoBonus > 0 ? promoBonus : 0)
+
+  db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(totalCoins, userId)
   db.prepare('INSERT OR IGNORE INTO pending_payments (id, user_id, coins, package_id, status) VALUES (?, ?, ?, ?, ?)')
     .run(event.object.id, userId, coins, metadata.packageId || '', 'done')
   db.prepare('UPDATE pending_payments SET status = ? WHERE id = ?').run('done', event.object.id)
   db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description, payment_id) VALUES (?, ?, ?, ?, ?)')
     .run(userId, coins, 'purchase', `Пополнение ${coins} монет`, event.object.id)
+  if (promoBonus > 0) {
+    db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description, payment_id) VALUES (?, ?, ?, ?, ?)')
+      .run(userId, promoBonus, 'bonus', `Бонус по промокоду ${promoCode}: +${promoBonus} монет`, event.object.id)
+  }
 
-  console.log(`[webhook] Payment: user ${userId} got ${coins} coins`)
+  console.log(`[webhook] Payment: user ${userId} got ${totalCoins} coins${promoBonus > 0 ? ` (incl. promo +${promoBonus})` : ''}`)
   res.sendStatus(200)
 })
 

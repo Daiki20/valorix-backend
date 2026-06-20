@@ -124,20 +124,11 @@ function sendVerificationCode(email, code) {
     .catch(err => console.error('SMTP error:', err.message))
 }
 
-const VALID_PROMOS = { valor: 28 } // promoCode.toLowerCase() → coins
-
-function resolvePromo(raw) {
-  const code = (raw || '').trim().toLowerCase()
-  return VALID_PROMOS[code] ? { code: code.toUpperCase(), coins: VALID_PROMOS[code] } : null
-}
-
 // POST /auth/register
 router.post('/register', async (req, res) => {
   const email    = sanitizeEmail(req.body.email)
   const password = sanitizeString(req.body.password, 128)
   const username = sanitizeString(req.body.username, 50)
-  const promoRaw = sanitizeString(req.body.promoCode || '', 20)
-  const promo    = resolvePromo(promoRaw)
   const ip       = req.ip || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || 'unknown'
 
   if (!email || !password) {
@@ -175,8 +166,8 @@ router.post('/register', async (req, res) => {
   const exp  = Date.now() + 15 * 60 * 1000
 
   db.prepare(
-    'INSERT INTO users (email, password_hash, username, coins, is_verified, verification_code, verification_code_exp, reg_ip, promo_code) VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?)'
-  ).run(email, password_hash, username || email.split('@')[0], code, exp, ip, promo ? promo.code : null)
+    'INSERT INTO users (email, password_hash, username, coins, is_verified, verification_code, verification_code_exp, reg_ip) VALUES (?, ?, ?, 0, 0, ?, ?, ?)'
+  ).run(email, password_hash, username || email.split('@')[0], code, exp, ip)
 
   try { await sendVerificationCode(email, code) } catch (err) { console.error('Email error:', err.message) }
 
@@ -200,19 +191,14 @@ router.post('/verify-email', async (req, res) => {
     return res.status(400).json({ error: 'Код устарел. Запросите новый.' })
   }
 
-  const promoCoins = user.promo_code ? (VALID_PROMOS[user.promo_code.toLowerCase()] || 15) : 15
-  const welcomeCoins = promoCoins
-  const promoApplied = !!user.promo_code
+  const welcomeCoins = 15
 
   db.prepare('UPDATE users SET is_verified = 1, coins = ?, verification_code = NULL, verification_code_exp = NULL WHERE id = ?').run(welcomeCoins, user.id)
-  const desc = promoApplied
-    ? `Приветственный бонус за регистрацию по промокоду ${user.promo_code}`
-    : 'Приветственный бонус за регистрацию'
-  db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(user.id, welcomeCoins, 'bonus', desc)
+  db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(user.id, welcomeCoins, 'bonus', 'Приветственный бонус за регистрацию')
 
   const updated = db.prepare('SELECT id, email, username, coins, is_admin, is_blocked, is_verified FROM users WHERE id = ?').get(user.id)
   const token = makeToken(updated.id)
-  res.json({ token, user: updated, coinsAwarded: welcomeCoins, promoApplied })
+  res.json({ token, user: updated })
 })
 
 // POST /auth/resend-code
