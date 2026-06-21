@@ -26,7 +26,6 @@ const expressRoutes = require('./routes/express')
 const matchesRoutes = require('./routes/matches')
 const blogRoutes = require('./routes/blog')
 const uploadRoutes = require('./routes/upload')
-const vilkiRoutes = require('./routes/vilki')
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -100,7 +99,6 @@ app.use('/express', expressRoutes)
 app.use('/matches', matchesRoutes)
 app.use('/blog', blogRoutes)
 app.use('/upload', uploadRoutes)
-app.use('/vilki', vilkiRoutes)
 
 // ── GET /images/:id/:filename — serve uploaded images from SQLite ─────────
 app.get('/images/:id/:filename', (req, res) => {
