@@ -8,6 +8,15 @@ const CACHE_TTL = 2 * 60 * 60 * 1000 // 2 часа
 
 let cache = { data: null, updatedAt: null, requestsRemaining: null }
 
+// Букмекеры доступные в России (или через простое зеркало)
+const RU_BOOKMAKERS = new Set([
+  '1xBet', 'Marathon Bet', 'Marathonbet', 'BetCity', 'Parimatch',
+  'Fonbet', 'Leon', 'Winline', 'BetBoom', 'Melbet', 'Mostbet',
+  'Betonline.ag', 'MyBookie.ag', // работают через сайт без ограничений
+])
+
+const HOURS_AHEAD = 48 // показываем матчи только в ближайшие 48 часов
+
 const SPORTS = [
   // Футбол
   'soccer_epl', 'soccer_spain_la_liga', 'soccer_germany_bundesliga',
@@ -46,13 +55,20 @@ function fetchJson(url) {
 
 function findArbitrage(events) {
   const arbs = []
+  const now = Date.now()
+  const cutoff = now + HOURS_AHEAD * 60 * 60 * 1000
 
   for (const event of events) {
+    // Фильтр по дате — только будущие матчи в ближайшие 48ч
+    const commence = new Date(event.commence_time).getTime()
+    if (commence < now || commence > cutoff) continue
+
     if (!event.bookmakers || event.bookmakers.length < 2) continue
 
-    // Собираем лучшие коэффициенты по каждому исходу
+    // Собираем лучшие коэффициенты только у доступных в России букмекеров
     const best = {}
     for (const bm of event.bookmakers) {
+      if (!RU_BOOKMAKERS.has(bm.title)) continue
       const market = bm.markets?.find(m => m.key === 'h2h')
       if (!market) continue
       for (const outcome of market.outcomes) {
