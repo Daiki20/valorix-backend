@@ -8,7 +8,25 @@ const CACHE_TTL = 2 * 60 * 60 * 1000 // 2 часа
 
 let cache = { data: null, updatedAt: null, requestsRemaining: null }
 
-const SPORTS = ['soccer_epl', 'soccer_spain_la_liga', 'soccer_germany_bundesliga', 'soccer_italy_serie_a', 'soccer_france_ligue_one', 'soccer_uefa_champs_league']
+const SPORTS = [
+  // Футбол
+  'soccer_epl', 'soccer_spain_la_liga', 'soccer_germany_bundesliga',
+  'soccer_italy_serie_a', 'soccer_france_ligue_one', 'soccer_uefa_champs_league',
+  'soccer_uefa_europa_league', 'soccer_netherlands_eredivisie',
+  'soccer_turkey_super_league', 'soccer_portugal_primeira_liga',
+  // Баскетбол
+  'basketball_nba', 'basketball_euroleague',
+  // Хоккей
+  'icehockey_nhl',
+  // Теннис
+  'tennis_atp_french_open', 'tennis_wta_french_open',
+  // MMA / Бокс
+  'mma_mixed_martial_arts',
+  // Американский футбол
+  'americanfootball_nfl',
+  // Бейсбол
+  'baseball_mlb',
+]
 
 function fetchJson(url) {
   return new Promise((resolve, reject) => {
@@ -98,12 +116,16 @@ router.get('/', async (req, res) => {
     let remaining = null
 
     for (const sport of SPORTS) {
-      const url = `https://api.the-odds-api.com/v4/sports/${sport}/odds/?apiKey=${ODDS_API_KEY}&regions=eu&markets=h2h&oddsFormat=decimal`
-      const { data, headers } = await fetchJson(url)
-      remaining = headers['x-requests-remaining']
-      if (Array.isArray(data)) {
-        data.forEach(e => { e.sport_key = sport })
-        allEvents.push(...data)
+      try {
+        const url = `https://api.the-odds-api.com/v4/sports/${sport}/odds/?apiKey=${ODDS_API_KEY}&regions=eu,uk&markets=h2h&oddsFormat=decimal`
+        const { data, headers } = await fetchJson(url)
+        remaining = headers['x-requests-remaining']
+        if (Array.isArray(data)) {
+          data.forEach(e => { e.sport_key = sport })
+          allEvents.push(...data)
+        }
+      } catch (e) {
+        console.log(`[vilki] skip ${sport}: ${e.message}`)
       }
     }
 
