@@ -166,7 +166,7 @@ router.get('/verify-payment/:paymentId', authenticate, async (req, res) => {
 
 // POST /coins/spend — списать монеты за анализ
 router.post('/spend', authenticate, (req, res) => {
-  const { amount = 28, matchHome, matchAway, league, result } = req.body
+  const { amount = 46, matchHome, matchAway, league, result } = req.body
   const isAdmin = req.user.is_admin === 1
 
   if (!isAdmin) {
