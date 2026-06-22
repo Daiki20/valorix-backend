@@ -8,11 +8,11 @@ const { authenticate } = require('../middleware/auth')
 const router = express.Router()
 
 const PACKAGES = [
-  { id: 'pack_test', coins: 50,   price: 50,   label: '50 монет (тест)', bonus: '' },
+  { id: 'pack_test', coins: 50,   price: 50,   label: '50 монет',   bonus: '' },
   { id: 'pack_100',  coins: 100,  price: 100,  label: '100 монет',  bonus: '' },
-  { id: 'pack_300',  coins: 300,  price: 270,  label: '300 монет',  bonus: 'Скидка 10%' },
-  { id: 'pack_600',  coins: 600,  price: 480,  label: '600 монет',  bonus: 'Скидка 20%' },
-  { id: 'pack_1000', coins: 1000, price: 700,  label: '1000 монет', bonus: 'Скидка 30%' },
+  { id: 'pack_300',  coins: 300,  price: 300,  label: '300 монет',  bonus: '' },
+  { id: 'pack_600',  coins: 600,  price: 540,  label: '600 монет',  bonus: 'Скидка 10%' },
+  { id: 'pack_1000', coins: 1000, price: 800,  label: '1000 монет', bonus: 'Скидка 20%' },
 ]
 
 const VALID_PROMOS = { valor: 28 } // code.toLowerCase() → bonus coins
