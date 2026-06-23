@@ -277,6 +277,8 @@ function getLeagueScore(sport, leagueName) {
     if (/esports.?battle|volta\s+champions|fc\s*2[456]|fifa\s+\d+|virtual.*football|\befc\b/i.test(l)) return 0
 
     if (/лига чемпионов|champions league/.test(l))                         return 1000
+    if (/\bчм\s*20\d\d|чемпионат мира|world cup|мундиаль/i.test(l))       return 1000
+    if (/евро\s*20\d\d|чемпионат европы|euro\s*20\d\d/i.test(l))          return 990
     if (/лига европы|europa league/.test(l))                              return 950
     if (/конференц.лига|conference league/.test(l))                       return 900
     if (/товарищ|\bсборн|international.*friendly|nations league/i.test(l)) return 880
