@@ -258,6 +258,72 @@ function sofascoreGetExpress(path) {
   })
 }
 
+// ── Football: fetch scheduled events + match to Fonbet by name ─────────────────
+const FOOTBALL_NATIONAL_TEAM_RU = {
+  'германия': 'germany', 'испания': 'spain', 'франция': 'france',
+  'италия': 'italy', 'португалия': 'portugal', 'нидерланды': 'netherlands',
+  'дания': 'denmark', 'швеция': 'sweden', 'норвегия': 'norway',
+  'бельгия': 'belgium', 'австрия': 'austria', 'швейцария': 'switzerland',
+  'польша': 'poland', 'чехия': 'czech republic', 'венгрия': 'hungary',
+  'румыния': 'romania', 'словакия': 'slovakia', 'словения': 'slovenia',
+  'хорватия': 'croatia', 'сербия': 'serbia', 'турция': 'turkey',
+  'греция': 'greece', 'шотландия': 'scotland', 'ирландия': 'ireland',
+  'уэльс': 'wales', 'англия': 'england', 'бразилия': 'brazil',
+  'аргентина': 'argentina', 'уругвай': 'uruguay', 'колумбия': 'colombia',
+  'эквадор': 'ecuador', 'чили': 'chile', 'перу': 'peru',
+  'парагвай': 'paraguay', 'венесуэла': 'venezuela', 'боливия': 'bolivia',
+  'мексика': 'mexico', 'сша': 'usa', 'канада': 'canada',
+  'япония': 'japan', 'австралия': 'australia', 'иран': 'iran',
+  'катар': 'qatar', 'саудовская аравия': 'saudi arabia',
+  'марокко': 'morocco', 'нигерия': 'nigeria', 'гана': 'ghana',
+  'камерун': 'cameroon', 'сенегал': 'senegal', 'египет': 'egypt',
+  'тунис': 'tunisia', 'алжир': 'algeria', 'мали': 'mali',
+  'конго': 'congo', 'др конго': 'dr congo',
+  'босния и герцеговина': 'bosnia', 'босния': 'bosnia',
+  'северная ирландия': 'northern ireland', 'южная корея': 'south korea',
+  'кот-дивуар': 'ivory coast', 'гаити': 'haiti', 'ямайка': 'jamaica',
+  'панама': 'panama', 'коста-рика': 'costa rica', 'гондурас': 'honduras',
+  'сальвадор': 'el salvador', 'гватемала': 'guatemala',
+  'новая зеландия': 'new zealand', 'узбекистан': 'uzbekistan',
+}
+
+function normFootball(s) {
+  return (s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^а-яa-z0-9 ]/g, '').replace(/ +/g, ' ').trim()
+}
+
+function teamMatchFootball(fonbet, sofa) {
+  const f = normFootball(fonbet)
+  const s = normFootball(sofa)
+  if (!f || !s) return false
+  if (f === s || f.includes(s) || s.includes(f)) return true
+  const mapped = FOOTBALL_NATIONAL_TEAM_RU[f]
+  if (mapped && (s === mapped || s.includes(mapped) || mapped.includes(s))) return true
+  return false
+}
+
+async function fetchSofascoreFootballEvents(date) {
+  try {
+    const data = await sofascoreGetExpress(`/api/v1/sport/football/scheduled-events/${date}`)
+    const events = data?.events || []
+    console.log(`[express/sofa-football] fetched ${events.length} events for ${date}`)
+    return events
+  } catch (err) {
+    console.warn('[express/sofa-football] fetch failed:', err.message)
+    return []
+  }
+}
+
+function findSofascoreFootballMatch(home, away, sofaEvents) {
+  for (const ev of sofaEvents) {
+    const sh = ev.homeTeam?.name || ''
+    const sa = ev.awayTeam?.name || ''
+    if (teamMatchFootball(home, sh) && teamMatchFootball(away, sa)) {
+      return { eventId: ev.id, homeTeamId: ev.homeTeam?.id, awayTeamId: ev.awayTeam?.id }
+    }
+  }
+  return null
+}
+
 // ── Hockey tournaments with hardcoded fallback season IDs (same as matches.js) ─
 const HOCKEY_TOURNAMENTS_EXPRESS = [
   { id: 3,    league: 'ИИХФ · Чемпионат мира', fallbackSeasonId: 81043 },
@@ -955,10 +1021,27 @@ async function generateExpress(targetDate, type = 'standard') {
     throw new Error(`Нет матчей Fonbet на ${targetDate}. Попробуйте перегенерировать позже.`)
   }
 
-  // Максимум 10 матчей в промпте
+  // Максимум 12 матчей в промпте
   const useMatches = matches.slice(0, 12)
 
-  const matchBlocks = useMatches.map((m, i) => {
+  // Enrich top 8 matches with real H2H + form from Sofascore
+  const sofaEvents = await fetchSofascoreFootballEvents(targetDate)
+  const enriched = await Promise.all(useMatches.slice(0, 8).map(async m => {
+    const ids = findSofascoreFootballMatch(m.home, m.away, sofaEvents)
+    if (!ids) return m
+    const [h2h, homeForm, awayForm] = await Promise.all([
+      fetchH2HForExpress(ids.eventId),
+      fetchTeamFormForExpress(ids.homeTeamId),
+      fetchTeamFormForExpress(ids.awayTeamId),
+    ])
+    return { ...m, h2h, homeForm, awayForm }
+  }))
+  const matchesWithStats = [...enriched, ...useMatches.slice(8)]
+  const statsCount = enriched.filter(m => m.h2h || m.homeForm).length
+  console.log(`[express/football-stats] enriched ${statsCount}/${Math.min(useMatches.length, 8)} matches with Sofascore data`)
+  const hasStats = statsCount > 0
+
+  const matchBlocks = matchesWithStats.map((m, i) => {
     const o = m.markets || {}
     const lines = [`П1=${o.home}  X=${o.draw}  П2=${o.away}`]
     if (o.dc1x) lines.push(`1X(ДШ)=${o.dc1x}`)
@@ -967,7 +1050,12 @@ async function generateExpress(targetDate, type = 'standard') {
     if (o.tm25) lines.push(`ТМ2.5=${o.tm25}`)
     if (o.tb35) lines.push(`ТБ3.5=${o.tb35}`)
     if (o.tm35) lines.push(`ТМ3.5=${o.tm35}`)
-    return `${i + 1}. ${m.home} — ${m.away} (${m.league})\n   ${lines.join('  ')}`
+    let block = `${i + 1}. ${m.home} — ${m.away} (${m.league})\n   ${lines.join('  ')}`
+    if (m.homeForm || m.awayForm) {
+      block += `\n   Форма: ${m.home} — ${m.homeForm || 'н/д'} | ${m.away} — ${m.awayForm || 'н/д'}`
+    }
+    if (m.h2h) block += `\n   Личные встречи:\n${m.h2h}`
+    return block
   }).join('\n\n')
 
   const isHigh = type === 'high'
@@ -983,21 +1071,27 @@ async function generateExpress(targetDate, type = 'standard') {
 - Предпочитай тоталы (ТБ/ТМ 2.5) или Двойной шанс — они надёжнее чистого П1/П2
 - Каждый коэффициент от 1.40 до 1.60 — ЗАПРЕЩЕНО брать коэф > 1.60`
 
-  const teamList = useMatches.map(m => `${m.home} — ${m.away}`).join(', ')
+  const teamList = matchesWithStats.map(m => `${m.home} — ${m.away}`).join(', ')
 
-  const prompt = `Ты — эксперт по ставкам на футбол. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс на ${targetDate}.
-ВАЖНО: ЗАПРЕЩЕНО добавлять один и тот же матч дважды, даже с разными типами ставок. Каждый матч — максимум 1 раз.
-
-ШАГ 1 — ПОИСК ДАННЫХ.
+  const step1 = hasStats
+    ? `ШАГ 1 — СТАТИСТИКА УЖЕ ПРЕДОСТАВЛЕНА.
+Данные по форме команд и личным встречам указаны прямо в списке матчей ниже.
+ИСПОЛЬЗУЙ ЭТИ ДАННЫЕ — не придумывай свою статистику. Если для матча данных нет — можешь уточнить на flashscore.com.`
+    : `ШАГ 1 — ПОИСК ДАННЫХ.
 Найди на flashscore.com или sports.ru текущую форму и статистику для этих матчей: ${teamList}
 Для каждой пары команд выясни:
 - Последние 4-5 результатов каждой команды (победы/поражения, голы)
 - Есть ли явный фаворит и насколько велик разрыв в классе
 - Средний тотал голов (забивают много или мало)
-- Ключевые травмы или дисквалификации
+- Ключевые травмы или дисквалификации`
+
+  const prompt = `Ты — эксперт по ставкам на футбол. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс на ${targetDate}.
+ВАЖНО: ЗАПРЕЩЕНО добавлять один и тот же матч дважды, даже с разными типами ставок. Каждый матч — максимум 1 раз.
+
+${step1}
 
 ШАГ 2 — ОЦЕНКА МАТЧЕЙ.
-На основе найденных данных оцени каждый матч ниже и выбери ${isHigh ? '3' : '2'} с наибольшей уверенностью (>70%).
+Оцени каждый матч ниже и выбери ${isHigh ? '3' : '2'} с наибольшей уверенностью (>70%).
 
 МАТЧИ С КОЭФФИЦИЕНТАМИ FONBET НА ${targetDate}:
 ${matchBlocks}
@@ -1008,8 +1102,8 @@ ${matchBlocks}
 - В "odds" ставь ТОЧНОЕ число из коэффициентов выше
 - В "prediction": "Победа хозяев (П1)", "Победа гостей (П2)", "Ничья (X)", "Двойной шанс (1X)", "Двойной шанс (X2)", "Тотал больше 2.5 (ТБ 2.5)", "Тотал меньше 2.5 (ТМ 2.5)", "Тотал больше 3.5 (ТБ 3.5)", "Тотал меньше 3.5 (ТМ 3.5)"
 - home/away/league — ТОЧНО как в списке выше
-- В "reasoning" — конкретные факты из поиска (результаты, голы, форма)
-- Не придумывай статистику — только то, что нашёл
+- В "reasoning" — конкретные факты ${hasStats ? 'из предоставленной статистики выше' : 'из поиска'} (результаты, голы, форма)
+- Не придумывай статистику — только реальные данные
 - ВСЕ поля — на русском языке
 ${oddsRequirement}
 
@@ -1030,8 +1124,11 @@ ${oddsRequirement}
   "summary": "Краткое описание экспресса на русском"
 }`
 
+  const sysContent = hasStats
+    ? 'Ты профессиональный беттинг-аналитик. Реальная статистика уже предоставлена в промпте — используй её. НЕ придумывай цифры и факты. Отвечай только валидным JSON на русском языке. Используй только коэффициенты из предоставленного списка.'
+    : 'Ты профессиональный беттинг-аналитик. Сначала ищи актуальные данные в интернете, потом выбирай ставки. Не придумывай статистику. Отвечай только валидным JSON на русском языке. Используй только коэффициенты из предоставленного списка.'
   const content = await openAIRequest([
-    { role: 'system', content: 'Ты профессиональный беттинг-аналитик. Сначала ищи актуальные данные в интернете, потом выбирай ставки. Не придумывай статистику. Отвечай только валидным JSON на русском языке. Используй только коэффициенты из предоставленного списка.' },
+    { role: 'system', content: sysContent },
     { role: 'user', content: prompt },
   ])
 
