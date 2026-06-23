@@ -411,8 +411,10 @@ async function getFonbetSportEvents(rootSportId, limit = 20) {
   const { data, tree, leagueNames, oddsMap } = await getFonbetData()
   const sportName = Object.keys(FONBET_SPORT_IDS).find(k => FONBET_SPORT_IDS[k] === rootSportId) || 'other'
 
+  const PLACEHOLDER = /^(хозяева|гости|команда\s*\d*|tbd|tba|home|away)$/i
   const events = (data.events || [])
-    .filter(e => e.level === 1 && e.team1 && e.team2 && tree[e.sportId] === rootSportId)
+    .filter(e => e.level === 1 && e.team1 && e.team2 && tree[e.sportId] === rootSportId
+      && !PLACEHOLDER.test(e.team1.trim()) && !PLACEHOLDER.test(e.team2.trim()))
     .map(e => {
       const league = leagueNames[e.sportId] || ''
       const sport = rootSportId === 29086 ? detectEsportType(league) : sportName
