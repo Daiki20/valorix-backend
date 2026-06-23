@@ -6,7 +6,7 @@ const { translateTeam } = require('../teamNames')
 
 const router = express.Router()
 const EXPRESS_COST_STANDARD = 99
-const EXPRESS_COST_HIGH = 140
+const EXPRESS_COST_HIGH = 149
 
 // Топ-лиги — ищем в первую очередь
 const TOP_LEAGUE_IDS = [
