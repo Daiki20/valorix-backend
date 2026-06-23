@@ -2350,6 +2350,7 @@ module.exports.getFonbetFootballMatches = async function(targetDate) {
   }
 
   const tomorrow = targetDate
+  const seenPairs = new Set()
   return (data.events || [])
     .filter(e =>
       e.level === 1 && e.team1 && e.team2 &&
@@ -2365,6 +2366,12 @@ module.exports.getFonbetFootballMatches = async function(targetDate) {
     })
     .filter(e => hasDataCoverage('football', e.league))
     .sort((a, b) => b.score - a.score)
+    .filter(e => {
+      const key = `${e.home}|${e.away}`
+      if (seenPairs.has(key)) return false
+      seenPairs.add(key)
+      return true
+    })
     .slice(0, 12)
     .map(({ home, away, league, markets }) => ({ home, away, league, markets }))
 }

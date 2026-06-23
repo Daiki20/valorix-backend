@@ -986,6 +986,7 @@ async function generateExpress(targetDate, type = 'standard') {
   const teamList = useMatches.map(m => `${m.home} — ${m.away}`).join(', ')
 
   const prompt = `Ты — эксперт по ставкам на футбол. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс на ${targetDate}.
+ВАЖНО: ЗАПРЕЩЕНО добавлять один и тот же матч дважды, даже с разными типами ставок. Каждый матч — максимум 1 раз.
 
 ШАГ 1 — ПОИСК ДАННЫХ.
 Найди на flashscore.com или sports.ru текущую форму и статистику для этих матчей: ${teamList}
@@ -1043,6 +1044,16 @@ ${oddsRequirement}
   const expectedPicks = isHigh ? 3 : 2
   if (!data.picks || data.picks.length < expectedPicks) throw new Error('Not enough picks')
   data.picks = data.picks.slice(0, expectedPicks)
+
+  // Deduplicate: one match can only appear once in an express
+  const seenMatches = new Set()
+  data.picks = data.picks.filter(p => {
+    const key = `${p.home}|${p.away}`
+    if (seenMatches.has(key)) return false
+    seenMatches.add(key)
+    return true
+  })
+  if (data.picks.length < expectedPicks) throw new Error('Duplicate matches in express, regenerating')
 
   const total = data.picks.reduce((acc, p) => acc * (parseFloat(p.odds) || 1), 1)
   data.total_odds = Math.round(total * 100) / 100
@@ -1631,6 +1642,16 @@ ${oddsReq}
   const expectedPicks = isHigh ? 3 : 2
   if (!data.picks || data.picks.length < expectedPicks) throw new Error('Not enough picks')
   data.picks = data.picks.slice(0, expectedPicks)
+
+  // Deduplicate: one match can only appear once in an express
+  const seenMatchesEs = new Set()
+  data.picks = data.picks.filter(p => {
+    const key = `${p.home}|${p.away}`
+    if (seenMatchesEs.has(key)) return false
+    seenMatchesEs.add(key)
+    return true
+  })
+  if (data.picks.length < expectedPicks) throw new Error('Duplicate matches in express, regenerating')
 
   const total = data.picks.reduce((acc, p) => acc * (parseFloat(p.odds) || 1), 1)
   data.total_odds = Math.round(total * 100) / 100
