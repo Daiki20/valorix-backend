@@ -83,7 +83,7 @@ function fetchOpenAICost(dateFrom, dateTo) {
             let total = 0
             for (const bucket of json.data) {
               for (const r of (bucket.results || [])) {
-                total += r.amount?.value || 0
+                total += parseFloat(r.amount?.value) || 0
               }
             }
             resolve(total)
