@@ -6,6 +6,70 @@ const PACKAGE_PRICES = {
   pack_test: 50, pack_100: 100, pack_300: 300, pack_600: 540, pack_1000: 800,
 }
 
+// Fetch Yandex Direct spend for a date range (YYYY-MM-DD)
+function fetchYaDirectSpend(dateFrom, dateTo) {
+  return new Promise((resolve) => {
+    const token = process.env.YADIRECT_TOKEN
+    if (!token) { resolve(null); return }
+
+    const report = {
+      params: {
+        SelectionCriteria: { DateFrom: dateFrom, DateTo: dateTo },
+        FieldNames: ['Cost'],
+        ReportName: `valorix_report_${Date.now()}`,
+        ReportType: 'ACCOUNT_PERFORMANCE_REPORT',
+        DateRangeType: 'CUSTOM_DATE',
+        Format: 'TSV',
+        IncludeVAT: 'YES',
+        IncludeDiscount: 'NO',
+      },
+    }
+
+    const body = JSON.stringify(report)
+    const options = {
+      hostname: 'api.direct.yandex.com',
+      path: '/json/v5/reports',
+      method: 'POST',
+      timeout: 15000,
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept-Language': 'ru',
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': Buffer.byteLength(body),
+        'processingMode': 'auto',
+        'returnMoneyInMicros': 'false',
+        'skipReportHeader': 'true',
+        'skipColumnHeader': 'true',
+        'skipReportSummary': 'true',
+      },
+    }
+
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => {
+        try {
+          if (res.statusCode === 200) {
+            // TSV: one line with cost value
+            const cost = parseFloat(data.trim().split('\n')[0])
+            resolve(isNaN(cost) ? null : Math.round(cost))
+          } else if (res.statusCode === 201 || res.statusCode === 202) {
+            // Report queued — retry once after 3s
+            setTimeout(() => fetchYaDirectSpend(dateFrom, dateTo).then(resolve), 3000)
+          } else {
+            console.warn('[tgReport] YaDirect status:', res.statusCode, data.slice(0, 200))
+            resolve(null)
+          }
+        } catch (e) { resolve(null) }
+      })
+    })
+    req.on('error', () => resolve(null))
+    req.on('timeout', () => { req.destroy(); resolve(null) })
+    req.write(body)
+    req.end()
+  })
+}
+
 function sendTelegramMessage(text) {
   const token = process.env.TG_BOT_TOKEN
   const chatId = process.env.TG_CHAT_ID
@@ -69,45 +133,39 @@ function formatDate(type) {
   return `${String(mskNow.getUTCDate()).padStart(2,'0')}.${String(mskNow.getUTCMonth()+1).padStart(2,'0')}.${mskNow.getUTCFullYear()}`
 }
 
-function buildReport(rangeType) {
+async function buildReport(rangeType) {
   const { start, end } = getMskRange(rangeType)
   const dateLabel = formatDate(rangeType)
   const period = rangeType === 'yesterday' ? 'за вчера' : 'за сегодня'
 
-  // Registrations
-  const regs = db.prepare(
-    `SELECT COUNT(*) as cnt FROM users WHERE created_at >= ? AND created_at <= ?`
-  ).get(start, end)
+  // Date strings for Yandex Direct (YYYY-MM-DD in MSK)
+  const mskOffset = 3 * 60 * 60 * 1000
+  const startMsk = new Date(new Date(start).getTime() + mskOffset)
+  const endMsk   = new Date(new Date(end).getTime() + mskOffset)
+  const yaDateFrom = startMsk.toISOString().slice(0, 10)
+  const yaDateTo   = endMsk.toISOString().slice(0, 10)
 
-  // Analyses
-  const analyses = db.prepare(
-    `SELECT COUNT(*) as cnt FROM analyses WHERE created_at >= ? AND created_at <= ?`
-  ).get(start, end)
-
-  // Express purchases (all types)
-  const expressPurchases = db.prepare(`
-    SELECT COUNT(*) as cnt FROM (
-      SELECT id FROM express_purchases WHERE created_at >= ? AND created_at <= ?
-      UNION ALL
-      SELECT id FROM express_purchases_high WHERE created_at >= ? AND created_at <= ?
-      UNION ALL
-      SELECT id FROM express_sports_purchases WHERE created_at >= ? AND created_at <= ?
-    )
-  `).get(start, end, start, end, start, end)
-
-  // Revenue from completed payments
-  const payments = db.prepare(
-    `SELECT package_id FROM pending_payments WHERE status = 'done' AND created_at >= ? AND created_at <= ?`
-  ).all(start, end)
+  // Parallel: DB queries + Yandex Direct API
+  const [regs, analyses, expressPurchases, payments, totalUsers, yaSpend] = await Promise.all([
+    db.prepare(`SELECT COUNT(*) as cnt FROM users WHERE created_at >= ? AND created_at <= ?`).get(start, end),
+    db.prepare(`SELECT COUNT(*) as cnt FROM analyses WHERE created_at >= ? AND created_at <= ?`).get(start, end),
+    db.prepare(`
+      SELECT COUNT(*) as cnt FROM (
+        SELECT id FROM express_purchases WHERE created_at >= ? AND created_at <= ?
+        UNION ALL
+        SELECT id FROM express_purchases_high WHERE created_at >= ? AND created_at <= ?
+        UNION ALL
+        SELECT id FROM express_sports_purchases WHERE created_at >= ? AND created_at <= ?
+      )
+    `).get(start, end, start, end, start, end),
+    db.prepare(`SELECT package_id FROM pending_payments WHERE status = 'done' AND created_at >= ? AND created_at <= ?`).all(start, end),
+    db.prepare(`SELECT COUNT(*) as cnt FROM users`).get(),
+    fetchYaDirectSpend(yaDateFrom, yaDateTo),
+  ])
 
   const revenue = payments.reduce((sum, p) => sum + (PACKAGE_PRICES[p.package_id] || 0), 0)
   const paymentCount = payments.length
-
-  // Total users (all time)
-  const totalUsers = db.prepare(`SELECT COUNT(*) as cnt FROM users`).get()
-
-  // Yandex Direct — can be set via env TG_YADIRECT_COST (manual or future API)
-  const yaDirectCost = process.env.TG_YADIRECT_COST ? `${process.env.TG_YADIRECT_COST} ₽` : 'нет данных'
+  const yaDirectCost = yaSpend !== null ? `${yaSpend} ₽` : 'нет данных'
 
   const lines = [
     `🤝 <b>Отчет на ${dateLabel} (${period})</b>`,
@@ -128,20 +186,20 @@ function buildReport(rangeType) {
   return lines.join('\n')
 }
 
-function sendMorningReport() {
+async function sendMorningReport() {
   console.log('[tgReport] Sending morning report (yesterday stats)...')
   try {
-    const text = buildReport('yesterday')
+    const text = await buildReport('yesterday')
     sendTelegramMessage(text)
   } catch (err) {
     console.error('[tgReport] Error building morning report:', err.message)
   }
 }
 
-function sendEveningReport() {
+async function sendEveningReport() {
   console.log('[tgReport] Sending evening report (today stats)...')
   try {
-    const text = buildReport('today')
+    const text = await buildReport('today')
     sendTelegramMessage(text)
   } catch (err) {
     console.error('[tgReport] Error building evening report:', err.message)
