@@ -276,14 +276,21 @@ cron.schedule('40 21 * * *', async () => {
   } catch (err) { console.error('[cron] 🎮 Dota2 Hard failed:', err.message) }
 }, { timezone: 'UTC' })
 
-// ── Cron: 📊 Telegram report 08:00 MSK (05:00 UTC) ───────────────────────────
+// ── Telegram webhook endpoint ─────────────────────────────────────────────────
+app.post('/tg-webhook', express.json({ limit: '1mb' }), (req, res) => {
+  res.sendStatus(200)  // answer Telegram immediately
+  const { handleUpdate } = require('./tgReport')
+  handleUpdate(req.body).catch(err => console.error('[tg-webhook] error:', err.message))
+})
+
+// ── Cron: 📊 Telegram report 08:00 MSK (05:00 UTC) — утро ────────────────────
 cron.schedule('0 5 * * *', () => {
   const { sendMorningReport } = require('./tgReport')
   sendMorningReport()
 }, { timezone: 'UTC' })
 
-// ── Cron: 📊 Telegram report 20:00 MSK (17:00 UTC) ───────────────────────────
-cron.schedule('0 17 * * *', () => {
+// ── Cron: 📊 Telegram report 23:59 MSK (20:59 UTC) — итог дня ────────────────
+cron.schedule('59 20 * * *', () => {
   const { sendEveningReport } = require('./tgReport')
   sendEveningReport()
 }, { timezone: 'UTC' })
@@ -301,4 +308,6 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`✅ Valorix backend running on http://localhost:${PORT}`)
+  const { registerWebhook } = require('./tgReport')
+  registerWebhook()
 })
