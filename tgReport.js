@@ -55,10 +55,14 @@ async function registerWebhook() {
 // ── OpenAI costs ──────────────────────────────────────────────────────────────
 function fetchOpenAICost(dateFrom, dateTo) {
   return new Promise((resolve) => {
-    const key = process.env.OPENAI_API_KEY
+    const key = process.env.OPENAI_USAGE_KEY || process.env.OPENAI_API_KEY
     if (!key) { resolve(null); return }
 
-    const path = `/v1/dashboard/billing/usage?start_date=${dateFrom}&end_date=${dateTo}`
+    // Convert YYYY-MM-DD to Unix timestamps (start of day / end of day UTC)
+    const startTime = Math.floor(new Date(dateFrom + 'T00:00:00Z').getTime() / 1000)
+    const endTime   = Math.floor(new Date(dateTo   + 'T23:59:59Z').getTime() / 1000)
+
+    const path = `/v1/organization/costs?start_time=${startTime}&end_time=${endTime}&limit=10&bucket_width=1d`
     const options = {
       hostname: 'api.openai.com',
       path,
@@ -72,10 +76,14 @@ function fetchOpenAICost(dateFrom, dateTo) {
       res.on('end', () => {
         try {
           const json = JSON.parse(data)
-          if (res.statusCode === 200 && json.total_usage != null) {
-            // total_usage is in cents USD
-            const dollars = json.total_usage / 100
-            resolve(dollars)
+          if (res.statusCode === 200 && Array.isArray(json.data)) {
+            let total = 0
+            for (const bucket of json.data) {
+              for (const r of (bucket.results || [])) {
+                total += r.amount?.value || 0
+              }
+            }
+            resolve(total)
           } else {
             console.warn('[OpenAI cost] status:', res.statusCode, data.slice(0, 200))
             resolve(null)
