@@ -92,17 +92,20 @@ function fetchYaDirectSpend(dateFrom, dateTo) {
       let data = ''
       res.on('data', c => data += c)
       res.on('end', () => {
+        console.log(`[YaDirect] status=${res.statusCode} body=${data.slice(0, 300)}`)
         try {
           if (res.statusCode === 200) {
-            const cost = parseFloat(data.trim().split('\n')[0])
+            const line = data.trim().split('\n')[0]
+            const cost = parseFloat(line)
+            console.log(`[YaDirect] parsed cost="${line}" => ${cost}`)
             resolve(isNaN(cost) ? null : Math.round(cost))
           } else if (res.statusCode === 201 || res.statusCode === 202) {
-            setTimeout(() => fetchYaDirectSpend(dateFrom, dateTo).then(resolve), 3000)
+            console.log('[YaDirect] report queued, retrying in 5s...')
+            setTimeout(() => fetchYaDirectSpend(dateFrom, dateTo).then(resolve), 5000)
           } else {
-            console.warn('[tgReport] YaDirect status:', res.statusCode, data.slice(0, 100))
             resolve(null)
           }
-        } catch { resolve(null) }
+        } catch (e) { console.error('[YaDirect] parse error:', e.message); resolve(null) }
       })
     })
     req.on('error', () => resolve(null))
@@ -245,4 +248,4 @@ async function sendEveningReport() {
   } catch (err) { console.error('[tgReport] Evening error:', err.message) }
 }
 
-module.exports = { sendMorningReport, sendEveningReport, handleUpdate, registerWebhook }
+module.exports = { sendMorningReport, sendEveningReport, handleUpdate, registerWebhook, buildReport }

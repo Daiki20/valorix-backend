@@ -179,6 +179,20 @@ app.get('/rss.xml', (req, res) => {
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }))
 
+// Debug: test Yandex Direct + send report now (only from localhost or with secret)
+app.get('/debug/report', async (req, res) => {
+  if (req.query.secret !== process.env.TG_BOT_TOKEN?.slice(-8)) {
+    return res.status(403).json({ error: 'forbidden' })
+  }
+  try {
+    const { buildReport } = require('./tgReport')
+    const text = await buildReport('now')
+    res.json({ ok: true, report: text })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // ── Cron: ⚽ Football Lite at 00:05 MSK (21:05 UTC) ──────────────────────
 cron.schedule('5 21 * * *', async () => {
   const { generateExpressForDate, getTomorrowDate } = require('./routes/express')
