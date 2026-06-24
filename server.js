@@ -276,6 +276,18 @@ cron.schedule('40 21 * * *', async () => {
   } catch (err) { console.error('[cron] 🎮 Dota2 Hard failed:', err.message) }
 }, { timezone: 'UTC' })
 
+// ── Cron: 📊 Telegram report 08:00 MSK (05:00 UTC) ───────────────────────────
+cron.schedule('0 5 * * *', () => {
+  const { sendMorningReport } = require('./tgReport')
+  sendMorningReport()
+}, { timezone: 'UTC' })
+
+// ── Cron: 📊 Telegram report 20:00 MSK (17:00 UTC) ───────────────────────────
+cron.schedule('0 17 * * *', () => {
+  const { sendEveningReport } = require('./tgReport')
+  sendEveningReport()
+}, { timezone: 'UTC' })
+
 // ── 404 ───────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({ error: 'Маршрут не найден' })
