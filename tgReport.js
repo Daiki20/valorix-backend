@@ -162,7 +162,7 @@ async function buildReport(type) {
     `<i>${period}</i>`,
     ``,
     `<b>🎰 Затраты:</b>`,
-    `🤖 OpenAI (сегодня): ${aiLine}`,
+    `⚪ OpenAI (сегодня): ${aiLine}`,
     ``,
     `<b>💻 Отчет Valorix:</b>`,
     `🚹 Зарегистрировались: <b>${regs.cnt}</b>`,
