@@ -186,17 +186,22 @@ async function buildReport(type) {
   ].join('\n')
 }
 
+// ── Allowed chat IDs (comma-separated in TG_CHAT_ID env var) ─────────────────
+function getAllowedIds() {
+  return (process.env.TG_CHAT_ID || '').split(',').map(s => s.trim()).filter(Boolean)
+}
+
 // ── Webhook: handle incoming Telegram updates ────────────────────────────────
 async function handleUpdate(update) {
-  const allowedChatId = process.env.TG_CHAT_ID
+  const allowedIds = getAllowedIds()
   const msg = update.message
   const cb  = update.callback_query
 
   const fromId = String(msg?.chat?.id ?? cb?.message?.chat?.id ?? '')
-  if (!allowedChatId || fromId !== allowedChatId) return  // ignore strangers
+  if (!allowedIds.length || !allowedIds.includes(fromId)) return  // ignore strangers
 
   if (msg?.text === '/start') {
-    await sendMessage(allowedChatId,
+    await sendMessage(fromId,
       `👋 <b>Valorix — панель отчётов</b>\n\n` +
       `Автоматические отчёты:\n🌅 08:00 МСК — утренняя сводка\n🌙 23:59 МСК — итог дня\n\n` +
       `Или нажми кнопку чтобы получить отчёт прямо сейчас:`,
@@ -208,7 +213,7 @@ async function handleUpdate(update) {
   if (msg?.text === '/report' || cb?.data === 'report_now') {
     if (cb) await tgPost('answerCallbackQuery', { callback_query_id: cb.id, text: 'Собираю данные...' })
     const text = await buildReport('now')
-    await sendMessage(allowedChatId, text, REPORT_BUTTON)
+    await sendMessage(fromId, text, REPORT_BUTTON)
   }
 }
 
@@ -216,20 +221,20 @@ async function handleUpdate(update) {
 async function sendMorningReport() {
   console.log('[tgReport] Sending morning report...')
   try {
-    const chatId = process.env.TG_CHAT_ID
-    if (!chatId) return
+    const ids = getAllowedIds()
+    if (!ids.length) return
     const text = await buildReport('morning')
-    await sendMessage(chatId, text, REPORT_BUTTON)
+    await Promise.all(ids.map(id => sendMessage(id, text, REPORT_BUTTON)))
   } catch (err) { console.error('[tgReport] Morning error:', err.message) }
 }
 
 async function sendEveningReport() {
   console.log('[tgReport] Sending evening report...')
   try {
-    const chatId = process.env.TG_CHAT_ID
-    if (!chatId) return
+    const ids = getAllowedIds()
+    if (!ids.length) return
     const text = await buildReport('evening')
-    await sendMessage(chatId, text, REPORT_BUTTON)
+    await Promise.all(ids.map(id => sendMessage(id, text, REPORT_BUTTON)))
   } catch (err) { console.error('[tgReport] Evening error:', err.message) }
 }
 
