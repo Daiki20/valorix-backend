@@ -52,65 +52,39 @@ async function registerWebhook() {
   else console.warn('[tgReport] Webhook failed:', result?.description)
 }
 
-// ── Yandex Direct ─────────────────────────────────────────────────────────────
-function fetchYaDirectSpend(dateFrom, dateTo) {
+// ── OpenAI costs ──────────────────────────────────────────────────────────────
+function fetchOpenAICost(dateFrom, dateTo) {
   return new Promise((resolve) => {
-    const token = process.env.YADIRECT_TOKEN
-    if (!token) { resolve(null); return }
+    const key = process.env.OPENAI_API_KEY
+    if (!key) { resolve(null); return }
 
-    const report = {
-      params: {
-        SelectionCriteria: { DateFrom: dateFrom, DateTo: dateTo },
-        FieldNames: ['Cost'],
-        ReportName: `valorix_${Date.now()}`,
-        ReportType: 'ACCOUNT_PERFORMANCE_REPORT',
-        DateRangeType: 'CUSTOM_DATE',
-        Format: 'TSV',
-        IncludeVAT: 'YES',
-        IncludeDiscount: 'NO',
-      },
-    }
-    const body = JSON.stringify(report)
+    const path = `/v1/dashboard/billing/usage?start_date=${dateFrom}&end_date=${dateTo}`
     const options = {
-      hostname: 'api.direct.yandex.com',
-      path: '/json/v5/reports',
-      method: 'POST',
-      timeout: 15000,
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept-Language': 'ru',
-        'Content-Type': 'application/json; charset=utf-8',
-        'Content-Length': Buffer.byteLength(body),
-        'processingMode': 'auto',
-        'returnMoneyInMicros': 'false',
-        'skipReportHeader': 'true',
-        'skipColumnHeader': 'true',
-        'skipReportSummary': 'true',
-      },
+      hostname: 'api.openai.com',
+      path,
+      method: 'GET',
+      timeout: 10000,
+      headers: { 'Authorization': `Bearer ${key}` },
     }
     const req = https.request(options, res => {
       let data = ''
       res.on('data', c => data += c)
       res.on('end', () => {
-        console.log(`[YaDirect] status=${res.statusCode} body=${data.slice(0, 300)}`)
         try {
-          if (res.statusCode === 200) {
-            const line = data.trim().split('\n')[0]
-            const cost = parseFloat(line)
-            console.log(`[YaDirect] parsed cost="${line}" => ${cost}`)
-            resolve(isNaN(cost) ? null : Math.round(cost))
-          } else if (res.statusCode === 201 || res.statusCode === 202) {
-            console.log('[YaDirect] report queued, retrying in 5s...')
-            setTimeout(() => fetchYaDirectSpend(dateFrom, dateTo).then(resolve), 5000)
+          const json = JSON.parse(data)
+          if (res.statusCode === 200 && json.total_usage != null) {
+            // total_usage is in cents USD
+            const dollars = json.total_usage / 100
+            resolve(dollars)
           } else {
+            console.warn('[OpenAI cost] status:', res.statusCode, data.slice(0, 200))
             resolve(null)
           }
-        } catch (e) { console.error('[YaDirect] parse error:', e.message); resolve(null) }
+        } catch (e) { resolve(null) }
       })
     })
     req.on('error', () => resolve(null))
     req.on('timeout', () => { req.destroy(); resolve(null) })
-    req.write(body)
     req.end()
   })
 }
@@ -163,32 +137,32 @@ async function buildReport(type) {
 
   const today = todayYmd()
 
-  const [regs, analyses, expressPurchases, payments, totalUsers, yaSpend] = await Promise.all([
+  const [regs, analyses, expressPurchases, payments, totalUsers, openaiCost] = await Promise.all([
     db.prepare(`SELECT COUNT(*) as cnt FROM users WHERE created_at >= ? AND created_at <= ?`).get(start, end),
     db.prepare(`SELECT COUNT(*) as cnt FROM analyses WHERE created_at >= ? AND created_at <= ?`).get(start, end),
     db.prepare(`
       SELECT COUNT(*) as cnt FROM (
-        SELECT id FROM express_purchases       WHERE created_at >= ? AND created_at <= ?
+        SELECT id FROM express_purchases        WHERE created_at >= ? AND created_at <= ?
         UNION ALL
-        SELECT id FROM express_purchases_high  WHERE created_at >= ? AND created_at <= ?
+        SELECT id FROM express_purchases_high   WHERE created_at >= ? AND created_at <= ?
         UNION ALL
         SELECT id FROM express_sports_purchases WHERE created_at >= ? AND created_at <= ?
       )
     `).get(start, end, start, end, start, end),
     db.prepare(`SELECT package_id FROM pending_payments WHERE status = 'done' AND created_at >= ? AND created_at <= ?`).all(start, end),
     db.prepare(`SELECT COUNT(*) as cnt FROM users`).get(),
-    fetchYaDirectSpend(today, today),
+    fetchOpenAICost(today, today),
   ])
 
   const revenue = payments.reduce((sum, p) => sum + (PACKAGE_PRICES[p.package_id] || 0), 0)
-  const yaLine = yaSpend !== null ? `${yaSpend} ₽` : 'нет данных'
+  const aiLine = openaiCost !== null ? `$${openaiCost.toFixed(2)}` : 'нет данных'
 
   return [
     `🤝 <b>Отчет на ${dateStr()}</b>`,
     `<i>${period}</i>`,
     ``,
     `<b>🎰 Затраты:</b>`,
-    `🟡 Я.Директ: ${yaLine}`,
+    `🤖 OpenAI (сегодня): ${aiLine}`,
     ``,
     `<b>💻 Отчет Valorix:</b>`,
     `🚹 Зарегистрировались: <b>${regs.cnt}</b>`,
