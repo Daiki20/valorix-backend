@@ -58,9 +58,12 @@ function fetchOpenAICost(dateFrom, dateTo) {
     const key = process.env.OPENAI_USAGE_KEY || process.env.OPENAI_API_KEY
     if (!key) { resolve(null); return }
 
-    // Convert YYYY-MM-DD to Unix timestamps (start of day / end of day UTC)
-    const startTime = Math.floor(new Date(dateFrom + 'T00:00:00Z').getTime() / 1000)
-    const endTime   = Math.floor(new Date(dateTo   + 'T23:59:59Z').getTime() / 1000)
+    // start = today 00:00 UTC, end = tomorrow 00:00 UTC (exclusive)
+    const startDate = new Date(dateFrom + 'T00:00:00Z')
+    const endDate   = new Date(dateFrom + 'T00:00:00Z')
+    endDate.setUTCDate(endDate.getUTCDate() + 1)
+    const startTime = Math.floor(startDate.getTime() / 1000)
+    const endTime   = Math.floor(endDate.getTime() / 1000)
 
     const path = `/v1/organization/costs?start_time=${startTime}&end_time=${endTime}&limit=10&bucket_width=1d`
     const options = {
