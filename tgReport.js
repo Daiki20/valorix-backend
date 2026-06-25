@@ -32,8 +32,13 @@ function tgPost(method, payload) {
   })
 }
 
-const REPORT_BUTTON = {
-  reply_markup: { inline_keyboard: [[{ text: '📊 Составить отчёт', callback_data: 'report_now' }]] },
+const REPORT_BUTTONS = {
+  reply_markup: {
+    inline_keyboard: [
+      [{ text: '📊 Составить отчёт', callback_data: 'report_now' }],
+      [{ text: '📅 Статистика за месяц', callback_data: 'month_stats' }],
+    ],
+  },
 }
 
 function sendMessage(chatId, text, extra = {}) {
@@ -43,7 +48,6 @@ function sendMessage(chatId, text, extra = {}) {
 // ── Register webhook with Telegram ───────────────────────────────────────────
 async function registerWebhook() {
   const token = process.env.TG_BOT_TOKEN
-  // Use known Railway URL or env override
   const host = process.env.RAILWAY_PUBLIC_DOMAIN || 'web-production-fefcd.up.railway.app'
   if (!token) { console.warn('[tgReport] TG_BOT_TOKEN not set'); return }
   const url = `https://${host}/tg-webhook`
@@ -58,14 +62,13 @@ function fetchOpenAICost(dateFrom, dateTo) {
     const key = process.env.OPENAI_USAGE_KEY || process.env.OPENAI_API_KEY
     if (!key) { resolve(null); return }
 
-    // start = today 00:00 UTC, end = tomorrow 00:00 UTC (exclusive)
     const startDate = new Date(dateFrom + 'T00:00:00Z')
-    const endDate   = new Date(dateFrom + 'T00:00:00Z')
-    endDate.setUTCDate(endDate.getUTCDate() + 1)
+    const endDate   = new Date(dateTo   + 'T00:00:00Z')
+    endDate.setUTCDate(endDate.getUTCDate() + 1)  // exclusive end
     const startTime = Math.floor(startDate.getTime() / 1000)
     const endTime   = Math.floor(endDate.getTime() / 1000)
 
-    const path = `/v1/organization/costs?start_time=${startTime}&end_time=${endTime}&limit=10&bucket_width=1d`
+    const path = `/v1/organization/costs?start_time=${startTime}&end_time=${endTime}&limit=31&bucket_width=1d`
     const options = {
       hostname: 'api.openai.com',
       path,
@@ -100,27 +103,90 @@ function fetchOpenAICost(dateFrom, dateTo) {
   })
 }
 
-// ── Date helpers (all times in MSK) ──────────────────────────────────────────
+// ── Yandex Direct costs ───────────────────────────────────────────────────────
+function fetchYaDirectSpend(dateFrom, dateTo) {
+  return new Promise((resolve) => {
+    const token = process.env.YADIRECT_TOKEN
+    if (!token) { resolve(null); return }
+
+    const report = {
+      params: {
+        SelectionCriteria: { DateFrom: dateFrom, DateTo: dateTo },
+        FieldNames: ['Cost'],
+        ReportName: `valorix_${Date.now()}`,
+        ReportType: 'ACCOUNT_PERFORMANCE_REPORT',
+        DateRangeType: 'CUSTOM_DATE',
+        Format: 'TSV',
+        IncludeVAT: 'YES',
+        IncludeDiscount: 'NO',
+      },
+    }
+    const body = JSON.stringify(report)
+    const options = {
+      hostname: 'api.direct.yandex.com',
+      path: '/json/v5/reports',
+      method: 'POST',
+      timeout: 15000,
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept-Language': 'ru',
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': Buffer.byteLength(body),
+        'processingMode': 'auto',
+        'returnMoneyInMicros': 'false',
+        'skipReportHeader': 'true',
+        'skipColumnHeader': 'true',
+        'skipReportSummary': 'true',
+      },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => {
+        try {
+          if (res.statusCode === 200) {
+            const cost = parseFloat(data.trim().split('\n')[0])
+            resolve(isNaN(cost) ? null : Math.round(cost))
+          } else if (res.statusCode === 201 || res.statusCode === 202) {
+            setTimeout(() => fetchYaDirectSpend(dateFrom, dateTo).then(resolve), 5000)
+          } else {
+            console.warn('[YaDirect] status:', res.statusCode, data.slice(0, 150))
+            resolve(null)
+          }
+        } catch { resolve(null) }
+      })
+    })
+    req.on('error', () => resolve(null))
+    req.on('timeout', () => { req.destroy(); resolve(null) })
+    req.write(body)
+    req.end()
+  })
+}
+
+// ── Date helpers (MSK) ────────────────────────────────────────────────────────
 function mskNow() {
   return new Date(Date.now() + MSK)
 }
 
-// Returns { start, end } as UTC datetime strings for SQLite
-// type: 'morning' (00:00–08:00) | 'evening' (00:00–23:59) | 'now' (00:00–current)
 function getMskRange(type) {
   const now = new Date()
   const msk = mskNow()
   const y = msk.getUTCFullYear(), mo = msk.getUTCMonth(), d = msk.getUTCDate()
 
-  const todayStart = new Date(Date.UTC(y, mo, d, 0, 0, 0) - MSK)
+  let startUtc, end
 
-  let end
-  if (type === 'morning')      end = new Date(Date.UTC(y, mo, d, 8, 0, 0) - MSK)
-  else if (type === 'evening') end = new Date(Date.UTC(y, mo, d, 23, 59, 59) - MSK)
-  else                         end = now  // 'now'
+  if (type === 'month') {
+    startUtc = new Date(Date.UTC(y, mo, 1, 0, 0, 0) - MSK)  // 1-е число месяца 00:00 MSK
+    end = now
+  } else {
+    startUtc = new Date(Date.UTC(y, mo, d, 0, 0, 0) - MSK)
+    if (type === 'morning')      end = new Date(Date.UTC(y, mo, d, 8, 0, 0) - MSK)
+    else if (type === 'evening') end = new Date(Date.UTC(y, mo, d, 23, 59, 59) - MSK)
+    else                         end = now  // 'now'
+  }
 
   const fmt = dt => dt.toISOString().replace('T', ' ').slice(0, 19)
-  return { start: fmt(todayStart), end: fmt(end) }
+  return { start: fmt(startUtc), end: fmt(end) }
 }
 
 function dateStr() {
@@ -137,18 +203,40 @@ function todayYmd() {
   return mskNow().toISOString().slice(0, 10)
 }
 
+function monthStartYmd() {
+  const m = mskNow()
+  return `${m.getUTCFullYear()}-${String(m.getUTCMonth()+1).padStart(2,'0')}-01`
+}
+
 // ── Build report ──────────────────────────────────────────────────────────────
 async function buildReport(type) {
   const { start, end } = getMskRange(type)
-
-  let period
-  if (type === 'morning')      period = '🌅 00:00 – 08:00'
-  else if (type === 'evening') period = '🌙 итог дня 00:00 – 23:59'
-  else                         period = `⚡ 00:00 – ${timeStr()}`
-
   const today = todayYmd()
 
-  const [regs, analyses, expressPurchases, payments, totalUsers, openaiCost] = await Promise.all([
+  let period, costFrom, costTo, header
+
+  if (type === 'morning') {
+    period = '🌅 00:00 – 08:00'
+    costFrom = costTo = today
+    header = `🤝 <b>Отчет на ${dateStr()}</b>`
+  } else if (type === 'evening') {
+    period = '🌙 итог дня 00:00 – 23:59'
+    costFrom = costTo = today
+    header = `🤝 <b>Отчет на ${dateStr()}</b>`
+  } else if (type === 'month') {
+    const msk = mskNow()
+    const monthName = msk.toLocaleString('ru-RU', { month: 'long', timeZone: 'UTC' })
+    period = `📅 с 01 по ${dateStr()}`
+    costFrom = monthStartYmd()
+    costTo = today
+    header = `📅 <b>Статистика за ${monthName} ${msk.getUTCFullYear()}</b>`
+  } else {
+    period = `⚡ 00:00 – ${timeStr()}`
+    costFrom = costTo = today
+    header = `🤝 <b>Отчет на ${dateStr()}</b>`
+  }
+
+  const [regs, analyses, expressPurchases, payments, totalUsers, openaiCost, yaSpend] = await Promise.all([
     db.prepare(`SELECT COUNT(*) as cnt FROM users WHERE created_at >= ? AND created_at <= ?`).get(start, end),
     db.prepare(`SELECT COUNT(*) as cnt FROM analyses WHERE created_at >= ? AND created_at <= ?`).get(start, end),
     db.prepare(`
@@ -162,18 +250,21 @@ async function buildReport(type) {
     `).get(start, end, start, end, start, end),
     db.prepare(`SELECT package_id FROM pending_payments WHERE status = 'done' AND created_at >= ? AND created_at <= ?`).all(start, end),
     db.prepare(`SELECT COUNT(*) as cnt FROM users`).get(),
-    fetchOpenAICost(today, today),
+    fetchOpenAICost(costFrom, costTo),
+    fetchYaDirectSpend(costFrom, costTo),
   ])
 
   const revenue = payments.reduce((sum, p) => sum + (PACKAGE_PRICES[p.package_id] || 0), 0)
   const aiLine = openaiCost !== null ? `$${openaiCost.toFixed(2)}` : 'нет данных'
+  const yaLine = yaSpend !== null ? `${yaSpend} ₽` : 'нет данных'
 
   return [
-    `🤝 <b>Отчет на ${dateStr()}</b>`,
+    header,
     `<i>${period}</i>`,
     ``,
     `<b>🎰 Затраты:</b>`,
-    `⚪ OpenAI (сегодня): ${aiLine}`,
+    `⚪ OpenAI: ${aiLine}`,
+    `🟡 Я.Директ: ${yaLine}`,
     ``,
     `<b>💻 Отчет Valorix:</b>`,
     `🚹 Зарегистрировались: <b>${regs.cnt}</b>`,
@@ -198,14 +289,14 @@ async function handleUpdate(update) {
   const cb  = update.callback_query
 
   const fromId = String(msg?.chat?.id ?? cb?.message?.chat?.id ?? '')
-  if (!allowedIds.length || !allowedIds.includes(fromId)) return  // ignore strangers
+  if (!allowedIds.length || !allowedIds.includes(fromId)) return
 
   if (msg?.text === '/start') {
     await sendMessage(fromId,
       `👋 <b>Valorix — панель отчётов</b>\n\n` +
       `Автоматические отчёты:\n🌅 08:00 МСК — утренняя сводка\n🌙 23:59 МСК — итог дня\n\n` +
-      `Или нажми кнопку чтобы получить отчёт прямо сейчас:`,
-      REPORT_BUTTON
+      `Выбери действие:`,
+      REPORT_BUTTONS
     )
     return
   }
@@ -213,7 +304,14 @@ async function handleUpdate(update) {
   if (msg?.text === '/report' || cb?.data === 'report_now') {
     if (cb) await tgPost('answerCallbackQuery', { callback_query_id: cb.id, text: 'Собираю данные...' })
     const text = await buildReport('now')
-    await sendMessage(fromId, text, REPORT_BUTTON)
+    await sendMessage(fromId, text, REPORT_BUTTONS)
+    return
+  }
+
+  if (msg?.text === '/month' || cb?.data === 'month_stats') {
+    if (cb) await tgPost('answerCallbackQuery', { callback_query_id: cb.id, text: 'Считаю за месяц...' })
+    const text = await buildReport('month')
+    await sendMessage(fromId, text, REPORT_BUTTONS)
   }
 }
 
@@ -224,7 +322,7 @@ async function sendMorningReport() {
     const ids = getAllowedIds()
     if (!ids.length) return
     const text = await buildReport('morning')
-    await Promise.all(ids.map(id => sendMessage(id, text, REPORT_BUTTON)))
+    await Promise.all(ids.map(id => sendMessage(id, text, REPORT_BUTTONS)))
   } catch (err) { console.error('[tgReport] Morning error:', err.message) }
 }
 
@@ -234,7 +332,7 @@ async function sendEveningReport() {
     const ids = getAllowedIds()
     if (!ids.length) return
     const text = await buildReport('evening')
-    await Promise.all(ids.map(id => sendMessage(id, text, REPORT_BUTTON)))
+    await Promise.all(ids.map(id => sendMessage(id, text, REPORT_BUTTONS)))
   } catch (err) { console.error('[tgReport] Evening error:', err.message) }
 }
 
