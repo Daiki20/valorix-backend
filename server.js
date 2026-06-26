@@ -193,8 +193,8 @@ app.get('/debug/report', async (req, res) => {
   }
 })
 
-// ── Cron: ⚽ Football Lite at 00:05 MSK (21:05 UTC) ──────────────────────
-cron.schedule('5 21 * * *', async () => {
+// ── Cron: ⚽ Football Lite at 21:05 MSK (18:05 UTC) ──────────────────────
+cron.schedule('5 18 * * *', async () => {
   const { generateExpressForDate, getTomorrowDate } = require('./routes/express')
   const db = require('./db')
   const targetDate = getTomorrowDate()
@@ -208,8 +208,8 @@ cron.schedule('5 21 * * *', async () => {
   }
 }, { timezone: 'UTC' })
 
-// ── Cron: ⚽ Football Hard at 00:10 MSK (21:10 UTC) ──────────────────────
-cron.schedule('10 21 * * *', async () => {
+// ── Cron: ⚽ Football Hard at 21:10 MSK (18:10 UTC) ──────────────────────
+cron.schedule('10 18 * * *', async () => {
   const { generateExpressForDate, getTomorrowDate } = require('./routes/express')
   const db = require('./db')
   const targetDate = getTomorrowDate()
@@ -223,8 +223,8 @@ cron.schedule('10 21 * * *', async () => {
   }
 }, { timezone: 'UTC' })
 
-// ── Cron: 🏒 Hockey Lite at 00:15 MSK (21:15 UTC) ────────────────────────
-cron.schedule('15 21 * * *', async () => {
+// ── Cron: 🏒 Hockey Lite at 21:15 MSK (18:15 UTC) ────────────────────────
+cron.schedule('15 18 * * *', async () => {
   const { generateSportExpressForCron, getTomorrowDate } = require('./routes/express')
   const db = require('./db')
   const targetDate = getTomorrowDate()
@@ -238,8 +238,8 @@ cron.schedule('15 21 * * *', async () => {
   }
 }, { timezone: 'UTC' })
 
-// ── Cron: 🔫 CS2 Lite at 00:25 MSK (21:25 UTC) ───────────────────────────────
-cron.schedule('25 21 * * *', async () => {
+// ── Cron: 🔫 CS2 Lite at 21:25 MSK (18:25 UTC) ───────────────────────────────
+cron.schedule('25 18 * * *', async () => {
   const { generateEsportsExpress, getTomorrowDate } = require('./routes/express')
   const db = require('./db')
   const targetDate = getTomorrowDate()
@@ -251,8 +251,8 @@ cron.schedule('25 21 * * *', async () => {
   } catch (err) { console.error('[cron] 🔫 CS2 Lite failed:', err.message) }
 }, { timezone: 'UTC' })
 
-// ── Cron: 🔫 CS2 Hard at 00:30 MSK (21:30 UTC) ───────────────────────────────
-cron.schedule('30 21 * * *', async () => {
+// ── Cron: 🔫 CS2 Hard at 21:30 MSK (18:30 UTC) ───────────────────────────────
+cron.schedule('30 18 * * *', async () => {
   const { generateEsportsExpress, getTomorrowDate } = require('./routes/express')
   const db = require('./db')
   const targetDate = getTomorrowDate()
@@ -264,8 +264,8 @@ cron.schedule('30 21 * * *', async () => {
   } catch (err) { console.error('[cron] 🔫 CS2 Hard failed:', err.message) }
 }, { timezone: 'UTC' })
 
-// ── Cron: 🎮 Dota2 Lite at 00:35 MSK (21:35 UTC) ─────────────────────────────
-cron.schedule('35 21 * * *', async () => {
+// ── Cron: 🎮 Dota2 Lite at 21:35 MSK (18:35 UTC) ─────────────────────────────
+cron.schedule('35 18 * * *', async () => {
   const { generateEsportsExpress, getTomorrowDate } = require('./routes/express')
   const db = require('./db')
   const targetDate = getTomorrowDate()
@@ -277,8 +277,8 @@ cron.schedule('35 21 * * *', async () => {
   } catch (err) { console.error('[cron] 🎮 Dota2 Lite failed:', err.message) }
 }, { timezone: 'UTC' })
 
-// ── Cron: 🎮 Dota2 Hard at 00:40 MSK (21:40 UTC) ─────────────────────────────
-cron.schedule('40 21 * * *', async () => {
+// ── Cron: 🎮 Dota2 Hard at 21:40 MSK (18:40 UTC) ─────────────────────────────
+cron.schedule('40 18 * * *', async () => {
   const { generateEsportsExpress, getTomorrowDate } = require('./routes/express')
   const db = require('./db')
   const targetDate = getTomorrowDate()
