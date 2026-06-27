@@ -995,7 +995,20 @@ router.post('/match-with-search', authenticate, async (req, res) => {
   if (!live) {
     const cached = cacheGet(cacheKey, SEARCH_CACHE_TTL)
     if (cached) {
-      try { return res.json(JSON.parse(cached)) } catch {}
+      try {
+        const parsed = JSON.parse(cached)
+        // If we have real stats but cache has old web-search result → invalidate
+        if (footballStats && parsed.searchUsed !== false) {
+          db.prepare('DELETE FROM analysis_cache WHERE cache_key = ?').run(cacheKey)
+        } else {
+          // Supplement logos from football stats if missing
+          if (footballStats?.homeTeam?.logo && !parsed.homeLogo) {
+            parsed.homeLogo = footballStats.homeTeam.logo
+            parsed.awayLogo = footballStats.awayTeam.logo
+          }
+          return res.json(parsed)
+        }
+      } catch {}
     }
   }
 
