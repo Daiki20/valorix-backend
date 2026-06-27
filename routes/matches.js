@@ -702,7 +702,12 @@ router.get('/live-all', async (req, res) => {
           odds1x2: oddsMap[e.id] || null,
         }
       })
-      .filter(e => hasDataCoverage(e.sport, e.league))
+      .filter(e => {
+        // Football live: only top leagues where api-football has real data (score >= 600)
+        // This removes second divisions, obscure cups, regional leagues
+        if (e.sport === 'football') return getLeagueScore('football', e.league) >= 600
+        return hasDataCoverage(e.sport, e.league)
+      })
       .sort((a, b) => {
         const sa = getLeagueScore(a.sport, a.league)
         const sb = getLeagueScore(b.sport, b.league)
