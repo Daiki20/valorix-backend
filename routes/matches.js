@@ -166,7 +166,9 @@ function thesportsdbSearchTeam(name) {
 // Lookup logo for ONE team name — NBA instant, others via TheSportsDB
 async function lookupTeamImg(name, isNBA = false) {
   if (!name) return null
-  const key = name.toLowerCase().trim()
+  // Translate to English before caching so Russian misses don't pollute the cache
+  const nameEn = isNBA ? name : translateLogoName(name)
+  const key = nameEn.toLowerCase().trim()
 
   // L1: memory cache
   const cached = _teamImgCache.get(key)
@@ -196,7 +198,6 @@ async function lookupTeamImg(name, isNBA = false) {
 
   // Others: TheSportsDB (free, no auth, works from Railway)
   try {
-    const nameEn = translateLogoName(name)
     const data = await thesportsdbSearchTeam(nameEn)
     const teams = data?.teams || []
     if (!teams.length) { _setLogoCache(key, null, false); return null }
