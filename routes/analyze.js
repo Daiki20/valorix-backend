@@ -166,6 +166,97 @@ function apiFootballGet(path, params = {}) {
   })
 }
 
+// ── API-Football Direct (api-sports.io, paid plan, not RapidAPI) ─────────────
+function apiFootballDirect(path) {
+  const key = process.env.APIFOOTBALL_KEY
+  if (!key) return Promise.reject(new Error('No APIFOOTBALL_KEY'))
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'v3.football.api-sports.io',
+      path,
+      method: 'GET',
+      timeout: 10000,
+      headers: { 'x-apisports-key': key },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => { try { resolve(JSON.parse(data)) } catch { reject(new Error('parse')) } })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    req.end()
+  })
+}
+
+async function fetchFootballStats(home, away) {
+  if (!process.env.APIFOOTBALL_KEY) return null
+  const wait = ms => new Promise(r => setTimeout(r, ms))
+  try {
+    const homeRes = await apiFootballDirect(`/teams?search=${encodeURIComponent(home)}`)
+    const homeTeam = homeRes.response?.[0]?.team
+    if (!homeTeam) return null
+    await wait(400)
+    const awayRes = await apiFootballDirect(`/teams?search=${encodeURIComponent(away)}`)
+    const awayTeam = awayRes.response?.[0]?.team
+    if (!awayTeam) return null
+    await wait(400)
+    const homeMatchesRes = await apiFootballDirect(`/fixtures?team=${homeTeam.id}&last=5`)
+    await wait(400)
+    const awayMatchesRes = await apiFootballDirect(`/fixtures?team=${awayTeam.id}&last=5`)
+    await wait(400)
+    const h2hRes = await apiFootballDirect(`/fixtures/headtohead?h2h=${homeTeam.id}-${awayTeam.id}&last=8`)
+
+    const parseMatches = (res, teamId) => (res.response || []).map(f => {
+      const isHome = f.teams.home.id === teamId
+      return {
+        date: f.fixture.date?.slice(0, 10),
+        home: f.teams.home.name,
+        away: f.teams.away.name,
+        score: `${f.goals.home}:${f.goals.away}`,
+        result: isHome
+          ? (f.teams.home.winner ? 'W' : f.teams.away.winner ? 'L' : 'D')
+          : (f.teams.away.winner ? 'W' : f.teams.home.winner ? 'L' : 'D'),
+        league: f.league.name,
+      }
+    })
+
+    return {
+      homeTeam: { id: homeTeam.id, name: homeTeam.name, logo: homeTeam.logo },
+      awayTeam: { id: awayTeam.id, name: awayTeam.name, logo: awayTeam.logo },
+      homeMatches: parseMatches(homeMatchesRes, homeTeam.id),
+      awayMatches: parseMatches(awayMatchesRes, awayTeam.id),
+      h2h: (h2hRes.response || []).map(f => ({
+        date: f.fixture.date?.slice(0, 10),
+        home: f.teams.home.name,
+        away: f.teams.away.name,
+        score: `${f.goals.home}:${f.goals.away}`,
+      })),
+    }
+  } catch (err) {
+    console.warn('[football-stats]', err.message)
+    return null
+  }
+}
+
+function buildStatsBlock(stats) {
+  const fmt = (matches, name) => {
+    if (!matches.length) return `${name}: нет данных`
+    return `${name} (последние матчи):\n` + matches.map(m =>
+      `  ${m.date} | ${m.home} vs ${m.away} — ${m.score} (${m.result}) | ${m.league}`
+    ).join('\n')
+  }
+  return [
+    fmt(stats.homeMatches, stats.homeTeam.name),
+    '',
+    fmt(stats.awayMatches, stats.awayTeam.name),
+    '',
+    stats.h2h.length
+      ? `Очные встречи:\n` + stats.h2h.map(m => `  ${m.date} | ${m.home} vs ${m.away} — ${m.score}`).join('\n')
+      : 'Очные встречи: нет данных',
+  ].join('\n')
+}
+
 // ── TheSportsDB (free, no key needed) ────────────────────────────────────────
 function theSportsDBGet(path) {
   return new Promise((resolve, reject) => {
@@ -859,7 +950,24 @@ router.post('/football-form-allsports', authenticate, async (req, res) => {
   }
 })
 
-// POST /analyze/match-with-search
+// POST /analyze/football-stats — real stats + logos from api-football.com, cached 6h
+router.post('/football-stats', authenticate, async (req, res) => {
+  const { home, away } = req.body || {}
+  if (!home || !away) return res.status(400).json({ error: 'home and away required' })
+  if (!process.env.APIFOOTBALL_KEY) return res.json({ error: 'APIFOOTBALL_KEY not set' })
+
+  const cacheKey = `apifb2_${normalize(home)}_${normalize(away)}`
+  const cached = cacheGet(cacheKey, 6 * 60 * 60 * 1000)
+  if (cached) { try { return res.json(JSON.parse(cached)) } catch {} }
+
+  const stats = await fetchFootballStats(home, away)
+  if (!stats) return res.json({ error: 'Teams not found', home, away })
+
+  cacheSet(cacheKey, JSON.stringify(stats))
+  console.log(`[football-stats] ${home} vs ${away}: home=${stats.homeTeam.name} away=${stats.awayTeam.name} h2h=${stats.h2h.length}`)
+  res.json(stats)
+})
+
 // POST /analyze/match-with-search
 // Pre-match: gpt-4o-search-preview, cached 12h
 // Live: gpt-4o-search-preview with live score/minute, NOT cached
@@ -869,6 +977,18 @@ router.post('/match-with-search', authenticate, async (req, res) => {
 
   const live = !!(isLive || score)
   const year = new Date().getFullYear()
+
+  // Football pre-match: try real stats from api-football.com
+  let footballStats = null
+  if (sport === 'football' && !live && process.env.APIFOOTBALL_KEY) {
+    const statsCk = `apifb2_${normalize(home)}_${normalize(away)}`
+    const cachedSt = cacheGet(statsCk, 6 * 60 * 60 * 1000)
+    if (cachedSt) { try { footballStats = JSON.parse(cachedSt) } catch {} }
+    else {
+      footballStats = await fetchFootballStats(home, away)
+      if (footballStats) cacheSet(statsCk, JSON.stringify(footballStats))
+    }
+  }
 
   // Pre-match: check cache (12h)
   const cacheKey = `wsearch_${(sport||'f')[0]}_${normalize(home)}_${normalize(away)}`
@@ -959,6 +1079,93 @@ router.post('/match-with-search', authenticate, async (req, res) => {
     },
   }
   const cfg = SPORT_CFG[sport] || SPORT_CFG.football
+
+  // ── Football + real API stats: use gpt-4o with real data ──────────────────
+  if (footballStats && !live) {
+    const statsBlock = buildStatsBlock(footballStats)
+    const statsPrompt = `Ты профессиональный беттинг-аналитик. Проанализируй матч на основе реальной статистики из API.
+
+МАТЧ: ${home} vs ${away}
+ТУРНИР: ${league || 'не указан'}
+${date ? `Дата: ${date}` : ''}
+${oddsBlock}
+
+РЕАЛЬНАЯ СТАТИСТИКА ИЗ API (${year} год):
+${statsBlock}
+
+Используй ТОЛЬКО данные выше — не выдумывай факты. Рассчитай среднее голов за/против для каждой команды.
+
+Ставки для анализа:
+${cfg.betTypes}
+
+Ответь СТРОГО в JSON (без markdown, без текста вне JSON):
+{
+  "verdict": "чёткий вердикт с обоснованием через среднее голов и форму команд",
+  "summary": "3-4 предложения с конкретными цифрами из статистики выше",
+  "confidence": число 50-85,
+  "risk": "low | medium | high",
+  "fairOdds": "справедливый коэффициент",
+  "bookOdds": null,
+  "value": 0,
+  "reasons": ["конкретный факт с цифрой из статистики", "факт 2 с цифрой", "факт 3", "факт 4"],
+  "extraBets": [
+    {"type": "ставка", "confidence": число, "reason": "обоснование через реальные данные"},
+    {"type": "ставка", "confidence": число, "reason": "обоснование"},
+    {"type": "ставка", "confidence": число, "reason": "обоснование"}
+  ],
+  "bestOdds": [],
+  "dataWarning": null
+}`
+
+    try {
+      const raw = await callOpenAI([
+        { role: 'system', content: 'Ты профессиональный беттинг-аналитик. Используй ТОЛЬКО предоставленную статистику — не выдумывай. Отвечай ТОЛЬКО валидным JSON без markdown.' },
+        { role: 'user', content: statsPrompt },
+      ], 1500)
+
+      const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
+      let analysis
+      try { analysis = JSON.parse(cleaned) }
+      catch { const m = raw.match(/\{[\s\S]*\}/); analysis = m ? JSON.parse(m[0]) : null }
+
+      if (!analysis) throw new Error('Parse failed')
+
+      const stripMdSt = s => {
+        if (s === null || s === undefined) return s
+        const str = typeof s === 'object' ? JSON.stringify(s) : String(s)
+        return str.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\s{2,}/g, ' ').trim()
+      }
+      const forceStrSt = (s, fallback = '') => {
+        if (s === null || s === undefined) return fallback
+        if (typeof s === 'object') return fallback
+        return String(s)
+      }
+
+      const result = {
+        verdict:    stripMdSt(analysis.verdict)    || `Победа ${home}`,
+        summary:    stripMdSt(analysis.summary)    || '',
+        confidence: Math.min(90, Math.max(50, Number(analysis.confidence) || 65)),
+        risk:       forceStrSt(analysis.risk, 'medium'),
+        fairOdds:   forceStrSt(analysis.fairOdds, '—') || '—',
+        bookOdds:   typeof analysis.bookOdds === 'string' ? analysis.bookOdds : null,
+        value:      Number(analysis.value) || 0,
+        reasons:    Array.isArray(analysis.reasons)   ? analysis.reasons.map(r => stripMdSt(r))   : [],
+        extraBets:  Array.isArray(analysis.extraBets) ? analysis.extraBets.map(b => ({ ...b, type: stripMdSt(b.type), reason: stripMdSt(b.reason) })) : [],
+        bestOdds:   [],
+        dataWarning: null,
+        searchUsed: false,
+        homeLogo: footballStats.homeTeam.logo || null,
+        awayLogo: footballStats.awayTeam.logo || null,
+      }
+
+      cacheSet(cacheKey, JSON.stringify(result))
+      console.log(`[match-with-search] ⚽ API-STATS ${home} vs ${away}: "${result.verdict}" conf=${result.confidence}`)
+      return res.json(result)
+    } catch (statsErr) {
+      console.warn('[match-with-search] stats path failed, falling back to web search:', statsErr.message)
+    }
+  }
+  // ── End football stats path ────────────────────────────────────────────────
 
   const prompt = live
     ? `Ты профессиональный беттинг-аналитик (${cfg.name}) с многолетним опытом. Матч ИДЁТ прямо сейчас.
