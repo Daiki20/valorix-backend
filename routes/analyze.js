@@ -1990,4 +1990,118 @@ router.get('/cache-reset', (req, res) => {
   }
 })
 
+// POST /analyze/dota-draft — analyze Dota 2 draft from screenshot using GPT-4o Vision
+router.post('/dota-draft', authenticate, async (req, res) => {
+  const { home, away, league, imageBase64 } = req.body || {}
+  if (!home || !away) return res.status(400).json({ error: 'home/away required' })
+  if (!imageBase64) return res.status(400).json({ error: 'image required' })
+
+  if (!/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(imageBase64)) {
+    return res.status(400).json({ error: 'invalid image format' })
+  }
+
+  try {
+    // Step 1: extract heroes using GPT-4o Vision
+    const extractRaw = await callOpenAI([{
+      role: 'user',
+      content: [
+        { type: 'image_url', image_url: { url: imageBase64, detail: 'high' } },
+        { type: 'text', text: `This is a Dota 2 professional match draft screen. Teams: "${home}" vs "${away}".
+Extract all picked and banned heroes. Use standard English hero names (e.g. "Anti-Mage", "Crystal Maiden").
+Return ONLY valid JSON:
+{"home_heroes":["Hero1","Hero2","Hero3","Hero4","Hero5"],"away_heroes":["Hero1","Hero2","Hero3","Hero4","Hero5"],"bans":["Ban1","Ban2"]}
+If a slot is empty/not yet picked, omit it. The team on the LEFT or GREEN side is usually Radiant. Match team names if visible.` },
+      ],
+    }], 600)
+
+    let draft = {}
+    try {
+      const cleaned = extractRaw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
+      const m = cleaned.match(/\{[\s\S]*\}/)
+      if (m) draft = JSON.parse(m[0])
+    } catch {}
+
+    const homeHeroes = Array.isArray(draft.home_heroes) ? draft.home_heroes : []
+    const awayHeroes = Array.isArray(draft.away_heroes) ? draft.away_heroes : []
+    const bans       = Array.isArray(draft.bans)        ? draft.bans        : []
+
+    const draftBlock = `${home}: ${homeHeroes.join(', ') || '—'}
+${away}: ${awayHeroes.join(', ') || '—'}
+Баны: ${bans.join(', ') || '—'}`
+
+    // Step 2: analyze draft with GPT-4o
+    const analysisPrompt = `Ты — профессиональный аналитик Dota 2 с многолетним опытом разбора профессиональных матчей.
+
+МАТЧ: ${home} vs ${away}
+ТУРНИР: ${league || 'не указан'}
+
+ДРАФТ:
+${draftBlock}
+
+Проанализируй:
+
+1. ДРАФТ ${home}: синергии (комбо, тимфайт, инициация), сильные/слабые стороны, тайминги силы, соответствие мете
+2. ДРАФТ ${away}: то же самое
+3. СРАВНЕНИЕ: чей драфт объективно сильнее, ключевые угрозы, кто доминирует early/mid/late
+4. ПРОГНОЗ: победитель и ключевой фактор
+
+Ответь СТРОГО в JSON:
+{
+  "verdict": "кто победит и почему (на основе драфта, конкретные герои)",
+  "summary": "3-4 предложения: сравнение драфтов, ключевые синергии, тайминги, прогноз",
+  "confidence": число 55-80,
+  "risk": "low | medium | high",
+  "fairOdds": "справедливый коэф на победителя",
+  "bookOdds": null,
+  "value": 0,
+  "reasons": [
+    "ключевая синергия ${home} (конкретные герои + что делают вместе)",
+    "ключевая синергия ${away}",
+    "преимущество победителя с объяснением",
+    "как должна разворачиваться игра"
+  ],
+  "extraBets": [
+    {"type": "Тотал карт ТБ 2.5", "confidence": число, "reason": "через сложность драфтов"},
+    {"type": "Первая кровь (${home}/${away})", "confidence": число, "reason": "кто агрессивнее по пикам"}
+  ],
+  "bestOdds": [],
+  "dataWarning": null
+}`
+
+    const raw = await callOpenAI([
+      { role: 'system', content: 'Ты профессиональный аналитик Dota 2. Анализируй конкретно — ссылайся на героев, их синергии, таймлайн силы. Отвечай ТОЛЬКО валидным JSON без markdown.' },
+      { role: 'user', content: analysisPrompt },
+    ], 1500)
+
+    const cleaned2 = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
+    let analysis
+    try { analysis = JSON.parse(cleaned2) }
+    catch { const m = raw.match(/\{[\s\S]*\}/); analysis = m ? JSON.parse(m[0]) : null }
+
+    if (!analysis) return res.status(500).json({ error: 'Parse failed' })
+
+    const result = {
+      verdict:    analysis.verdict    || 'Анализ драфта',
+      summary:    analysis.summary    || '',
+      confidence: Math.min(80, Math.max(50, Number(analysis.confidence) || 65)),
+      risk:       analysis.risk       || 'medium',
+      fairOdds:   analysis.fairOdds   || '—',
+      bookOdds:   null,
+      value:      0,
+      reasons:    Array.isArray(analysis.reasons)   ? analysis.reasons   : [],
+      extraBets:  Array.isArray(analysis.extraBets) ? analysis.extraBets : [],
+      bestOdds:   [],
+      dataWarning: null,
+      searchUsed: false,
+      draftData: { home: homeHeroes, away: awayHeroes, bans },
+    }
+
+    console.log(`[dota-draft] ${home} vs ${away}: ${homeHeroes.length}+${awayHeroes.length} heroes → "${result.verdict}"`)
+    res.json(result)
+  } catch (err) {
+    console.error('[dota-draft]', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
 module.exports = router
