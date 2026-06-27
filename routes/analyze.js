@@ -193,13 +193,16 @@ async function fetchFootballStats(home, away) {
   if (!process.env.APIFOOTBALL_KEY) return null
   const wait = ms => new Promise(r => setTimeout(r, ms))
   try {
-    const homeRes = await apiFootballDirect(`/teams?search=${encodeURIComponent(home)}`)
+    const homeEn = translateTeamToEn(home)
+    const awayEn = translateTeamToEn(away)
+    console.log(`[football-stats] searching: "${homeEn}" vs "${awayEn}"`)
+    const homeRes = await apiFootballDirect(`/teams?search=${encodeURIComponent(homeEn)}`)
     const homeTeam = homeRes.response?.[0]?.team
-    if (!homeTeam) return null
+    if (!homeTeam) { console.warn(`[football-stats] home not found: ${homeEn}`); return null }
     await wait(400)
-    const awayRes = await apiFootballDirect(`/teams?search=${encodeURIComponent(away)}`)
+    const awayRes = await apiFootballDirect(`/teams?search=${encodeURIComponent(awayEn)}`)
     const awayTeam = awayRes.response?.[0]?.team
-    if (!awayTeam) return null
+    if (!awayTeam) { console.warn(`[football-stats] away not found: ${awayEn}`); return null }
     await wait(400)
     const homeMatchesRes = await apiFootballDirect(`/fixtures?team=${homeTeam.id}&last=5`)
     await wait(400)
@@ -806,9 +809,34 @@ const RU_TO_EN_TEAMS = {
   'ямайка':'Jamaica','куба':'Cuba','гондурас':'Honduras','сальвадор':'El Salvador',
 }
 
+const RU_TO_EN_CLUBS = {
+  'зенит':'Zenit','спартак':'Spartak Moscow','спартак москва':'Spartak Moscow',
+  'цска':'CSKA Moscow','цска москва':'CSKA Moscow','локомотив':'Lokomotiv Moscow',
+  'локомотив москва':'Lokomotiv Moscow','динамо':'Dinamo Moscow','динамо москва':'Dinamo Moscow',
+  'краснодар':'Krasnodar','рубин':'Rubin Kazan','рубин казань':'Rubin Kazan',
+  'ростов':'FC Rostov','крылья советов':'Krylia Sovetov','химки':'Khimki',
+  'ахмат':'Akhmat Grozny','урал':'Ural','факел':'Fakel','пари нн':'Pari Nizhny Novgorod',
+  'нижний новгород':'FC Nizhny Novgorod','оренбург':'Orenburg',
+  'манчестер сити':'Manchester City','манчестер юнайтед':'Manchester United',
+  'реал мадрид':'Real Madrid','барселона':'Barcelona','ливерпуль':'Liverpool',
+  'челси':'Chelsea','арсенал':'Arsenal','тоттенхэм':'Tottenham','тоттенхэм хотспур':'Tottenham',
+  'ювентус':'Juventus','интер':'Inter','интер милан':'Inter','милан':'AC Milan','ак милан':'AC Milan',
+  'бавария':'Bayern Munich','бавария мюнхен':'Bayern Munich',
+  'боруссия':'Borussia Dortmund','боруссия дортмунд':'Borussia Dortmund',
+  'пари сен-жермен':'PSG','псж':'PSG','пsg':'PSG',
+  'атлетико':'Atletico Madrid','атлетико мадрид':'Atletico Madrid',
+  'севилья':'Sevilla','валенсия':'Valencia','вильярреал':'Villarreal',
+  'аякс':'Ajax','порту':'Porto','бенфика':'Benfica','спортинг':'Sporting CP',
+  'наполи':'Napoli','лацио':'Lazio','рома':'AS Roma','фиорентина':'Fiorentina',
+  'лейпциг':'RB Leipzig','фрайбург':'Freiburg','айнтрахт':'Eintracht Frankfurt',
+  'шахтер':'Shakhtar Donetsk','шахтёр':'Shakhtar Donetsk','динамо киев':'Dynamo Kyiv',
+  'селтик':'Celtic','рейнджерс':'Rangers',
+  'динамо махачкала':'Dinamo Makhachkala',
+}
+
 function translateTeamToEn(name) {
   const key = (name || '').toLowerCase().trim()
-  return RU_TO_EN_TEAMS[key] || name
+  return RU_TO_EN_CLUBS[key] || RU_TO_EN_TEAMS[key] || name
 }
 
 function parseAllSportsFixtures(fixtures, teamKey) {
