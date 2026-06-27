@@ -126,6 +126,39 @@ function httpsGet(url, maxRedirects = 4) {
   })
 }
 
+// GPT-4o without web search (for express with real stats)
+function openAINoSearch(messages) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ model: 'gpt-4o', messages, max_tokens: 1400, temperature: 0.3 })
+    const options = {
+      hostname: 'api.openai.com',
+      path: '/v1/chat/completions',
+      method: 'POST',
+      timeout: 60000,
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      },
+    }
+    const req = https.request(options, (res) => {
+      let data = ''
+      res.on('data', chunk => data += chunk)
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data)
+          if (res.statusCode >= 400) reject(new Error(parsed.error?.message || 'OpenAI error'))
+          else resolve(parsed.choices[0].message.content)
+        } catch { reject(new Error('OpenAI parse error')) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('OpenAI timeout')) })
+    req.write(body)
+    req.end()
+  })
+}
+
 function openAIRequest(messages, forcedSearch = false) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
@@ -946,6 +979,128 @@ const ODDS_TRANSLATION = `Перевод названий ставок на ру
 - Asian Handicap Home N → Фора хозяев (N)
 - Asian Handicap Away N → Фора гостей (N)`
 
+// ── API-Football stats for express (real form data) ──────────────────────────
+function apiFootballExpress(path) {
+  const key = process.env.APIFOOTBALL_KEY
+  if (!key) return Promise.reject(new Error('No APIFOOTBALL_KEY'))
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'v3.football.api-sports.io',
+      path, method: 'GET', timeout: 10000,
+      headers: { 'x-apisports-key': key },
+    }
+    const req = https.request(options, res => {
+      let data = ''
+      res.on('data', c => data += c)
+      res.on('end', () => { try { resolve(JSON.parse(data)) } catch (e) { reject(e) } })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    req.end()
+  })
+}
+
+// Shared translation table (clubs + national teams)
+const RU_TO_EN_EXPRESS = {
+  'зенит':'Zenit','спартак':'Spartak Moscow','спартак москва':'Spartak Moscow',
+  'цска':'CSKA Moscow','цска москва':'CSKA Moscow','локомотив':'Lokomotiv Moscow',
+  'локомотив москва':'Lokomotiv Moscow','динамо':'Dinamo Moscow','динамо москва':'Dinamo Moscow',
+  'краснодар':'Krasnodar','рубин':'Rubin Kazan','ростов':'FC Rostov',
+  'крылья советов':'Krylia Sovetov','ахмат':'Akhmat Grozny',
+  'манчестер сити':'Manchester City','манчестер юнайтед':'Manchester United',
+  'реал мадрид':'Real Madrid','барселона':'Barcelona','ливерпуль':'Liverpool',
+  'челси':'Chelsea','арсенал':'Arsenal','тоттенхэм':'Tottenham',
+  'бавария':'Bayern Munich','бавария мюнхен':'Bayern Munich',
+  'боруссия':'Borussia Dortmund','боруссия дортмунд':'Borussia Dortmund',
+  'псж':'PSG','пари сен-жермен':'PSG','атлетико':'Atletico Madrid',
+  'атлетико мадрид':'Atletico Madrid','севилья':'Sevilla','валенсия':'Valencia',
+  'ювентус':'Juventus','интер':'Inter Milan','милан':'AC Milan','наполи':'Napoli',
+  'аякс':'Ajax','порту':'Porto','бенфика':'Benfica','спортинг':'Sporting CP',
+  'шахтёр':'Shakhtar Donetsk','шахтер':'Shakhtar Donetsk',
+  'лейпциг':'RB Leipzig','байер':'Bayer Leverkusen',
+  'виктория пльзень':'Viktoria Plzen','славия прага':'Slavia Prague','спарта прага':'Sparta Prague',
+  'легия варшава':'Legia Warsaw','легия':'Legia Warsaw','лех познань':'Lech Poznan',
+  'псв':'PSV','фейеноорд':'Feyenoord','галатасарай':'Galatasaray','фенербахче':'Fenerbahce',
+  'зальцбург':'RB Salzburg','брюгге':'Club Brugge','андерлехт':'Anderlecht',
+  // Сборные
+  'россия':'Russia','германия':'Germany','франция':'France','испания':'Spain',
+  'англия':'England','италия':'Italy','португалия':'Portugal','нидерланды':'Netherlands',
+  'бельгия':'Belgium','хорватия':'Croatia','дания':'Denmark','швеция':'Sweden',
+  'норвегия':'Norway','швейцария':'Switzerland','австрия':'Austria','польша':'Poland',
+  'чехия':'Czech Republic','сербия':'Serbia','греция':'Greece','турция':'Turkey',
+  'украина':'Ukraine','румыния':'Romania','венгрия':'Hungary','словакия':'Slovakia',
+  'бразилия':'Brazil','аргентина':'Argentina','уругвай':'Uruguay','чили':'Chile',
+  'колумбия':'Colombia','мексика':'Mexico','сша':'USA','канада':'Canada',
+  'япония':'Japan','южная корея':'South Korea','австралия':'Australia',
+  'египет':'Egypt','марокко':'Morocco','сенегал':'Senegal','нигерия':'Nigeria',
+  'камерун':'Cameroon','гана':'Ghana','алжир':'Algeria','тунис':'Tunisia',
+  'иран':'Iran','саудовская аравия':'Saudi Arabia','катар':'Qatar',
+  'панама':'Panama','коста-рика':'Costa Rica','эквадор':'Ecuador',
+  'босния и герцеговина':'Bosnia and Herzegovina','босния':'Bosnia and Herzegovina',
+  'северная македония':'North Macedonia','словения':'Slovenia',
+  'узбекистан':'Uzbekistan','казахстан':'Kazakhstan','иордания':'Jordan',
+}
+
+function translateForExpress(name) {
+  const key = (name || '').toLowerCase().trim()
+  if (RU_TO_EN_EXPRESS[key]) return RU_TO_EN_EXPRESS[key]
+  const firstWord = key.split(/\s/)[0]
+  if (firstWord && firstWord !== key && RU_TO_EN_EXPRESS[firstWord]) return RU_TO_EN_EXPRESS[firstWord]
+  return name
+}
+
+// In-memory stats cache (express generated once per day — no SQLite needed)
+const expressStatsCache = new Map()
+const EXPRESS_STATS_TTL = 8 * 60 * 60 * 1000
+
+async function fetchStatsForExpress(home, away) {
+  const cacheKey = `${home.toLowerCase()}_vs_${away.toLowerCase()}`
+  const cached = expressStatsCache.get(cacheKey)
+  if (cached && Date.now() - cached.ts < EXPRESS_STATS_TTL) return cached.data
+  if (!process.env.APIFOOTBALL_KEY) return null
+
+  const wait = ms => new Promise(r => setTimeout(r, ms))
+  try {
+    const homeEn = translateForExpress(home)
+    const awayEn = translateForExpress(away)
+
+    const homeRes = await apiFootballExpress(`/teams?search=${encodeURIComponent(homeEn)}`)
+    const homeTeam = homeRes.response?.[0]?.team
+    if (!homeTeam) return null
+    await wait(350)
+
+    const awayRes = await apiFootballExpress(`/teams?search=${encodeURIComponent(awayEn)}`)
+    const awayTeam = awayRes.response?.[0]?.team
+    if (!awayTeam) return null
+    await wait(350)
+
+    const [homeFixtures, awayFixtures] = await Promise.all([
+      apiFootballExpress(`/fixtures?team=${homeTeam.id}&last=5`),
+      apiFootballExpress(`/fixtures?team=${awayTeam.id}&last=5`),
+    ])
+
+    const fmtMatches = (res, teamId) => (res.response || []).map(f => {
+      const isHome = f.teams.home.id === teamId
+      const gf = isHome ? f.goals.home : f.goals.away
+      const ga = isHome ? f.goals.away : f.goals.home
+      const r = gf > ga ? 'В' : gf < ga ? 'П' : 'Н'
+      return `${f.fixture.date?.slice(0, 10)} ${f.teams.home.name} ${f.goals.home}:${f.goals.away} ${f.teams.away.name} (${r})`
+    })
+
+    const data = {
+      homeTeam: homeTeam.name,
+      awayTeam: awayTeam.name,
+      homeMatches: fmtMatches(homeFixtures, homeTeam.id),
+      awayMatches: fmtMatches(awayFixtures, awayTeam.id),
+    }
+    expressStatsCache.set(cacheKey, { data, ts: Date.now() })
+    return data
+  } catch (err) {
+    console.warn(`[express/stats] ${home} vs ${away}: ${err.message}`)
+    return null
+  }
+}
+
 async function generateExpress(targetDate, type = 'standard') {
   // Берём матчи из Fonbet (тот же список что на странице анализа)
   const { getFonbetFootballMatches } = require('./matches')
@@ -958,6 +1113,22 @@ async function generateExpress(targetDate, type = 'standard') {
   // Максимум 12 матчей в промпте
   const useMatches = matches.slice(0, 12)
 
+  // Fetch real stats from API-Football for top 8 matches (sequential to respect rate limits)
+  const statsMap = {}
+  if (process.env.APIFOOTBALL_KEY) {
+    const wait = ms => new Promise(r => setTimeout(r, ms))
+    let statsCount = 0
+    for (const m of useMatches.slice(0, 8)) {
+      const stats = await fetchStatsForExpress(m.home, m.away).catch(() => null)
+      if (stats) {
+        statsMap[`${m.home}|${m.away}`] = stats
+        statsCount++
+        await wait(200)
+      }
+    }
+    console.log(`[express/stats] fetched real stats for ${statsCount}/${Math.min(useMatches.length, 8)} matches`)
+  }
+
   const matchBlocks = useMatches.map((m, i) => {
     const o = m.markets || {}
     const lines = [`П1=${o.home}  X=${o.draw}  П2=${o.away}`]
@@ -967,9 +1138,18 @@ async function generateExpress(targetDate, type = 'standard') {
     if (o.tm25) lines.push(`ТМ2.5=${o.tm25}`)
     if (o.tb35) lines.push(`ТБ3.5=${o.tb35}`)
     if (o.tm35) lines.push(`ТМ3.5=${o.tm35}`)
-    return `${i + 1}. ${m.home} — ${m.away} (${m.league})\n   ${lines.join('  ')}`
+    let block = `${i + 1}. ${m.home} — ${m.away} (${m.league})\n   ${lines.join('  ')}`
+    const stats = statsMap[`${m.home}|${m.away}`]
+    if (stats?.homeMatches?.length) {
+      block += `\n   Форма ${m.home}: ${stats.homeMatches.join(' | ')}`
+    }
+    if (stats?.awayMatches?.length) {
+      block += `\n   Форма ${m.away}: ${stats.awayMatches.join(' | ')}`
+    }
+    return block
   }).join('\n\n')
 
+  const hasRealStats = Object.keys(statsMap).length > 0
   const isHigh = type === 'high'
   const oddsRequirement = isHigh
     ? `- Выбери РОВНО 3 события
@@ -983,28 +1163,28 @@ async function generateExpress(targetDate, type = 'standard') {
 - Предпочитай тоталы (ТБ/ТМ 2.5) или Двойной шанс — они надёжнее чистого П1/П2
 - Каждый коэффициент от 1.40 до 1.60 — ЗАПРЕЩЕНО брать коэф > 1.60`
 
-  const teamList = useMatches.map(m => `${m.home} — ${m.away}`).join(', ')
+  const statsNote = hasRealStats
+    ? `РЕАЛЬНАЯ СТАТИСТИКА из API-Football уже включена в каждый матч (строки "Форма ...").
+Используй ТОЛЬКО эти данные для обоснования — не выдумывай результаты матчей.
+Если строки "Форма" нет — для этой команды данных нет, пиши об этом честно.`
+    : `Статистика из API недоступна. Обосновывай через разницу в коэффициентах и силу команд.`
 
   const prompt = `Ты — эксперт по ставкам на футбол. Составь ${isHigh ? 'ВЫСОКОДОХОДНЫЙ' : 'НАДЁЖНЫЙ'} экспресс на ${targetDate}.
-ВАЖНО: ЗАПРЕЩЕНО добавлять один и тот же матч дважды, даже с разными типами ставок. Каждый матч — максимум 1 раз.
+ВАЖНО: ЗАПРЕЩЕНО добавлять один и тот же матч дважды. Каждый матч — максимум 1 раз.
 
-ШАГ 1 — ОБЯЗАТЕЛЬНЫЙ ПОИСК СТАТИСТИКИ.
-ЗАПРЕЩЕНО использовать данные из памяти или обучения. Ты ОБЯЗАН прямо сейчас найти актуальную статистику в интернете.
-Ищи на любых доступных сайтах: winrating.ru, flashscore.com, sports.ru, soccerway.com, fbref.com или других.
-Для каждой пары найди:
-${teamList}
-
-Для каждой команды найди:
-- Последние 5 результатов (счёт, победа/ничья/поражение)
-- Голевую статистику (сколько забивает и пропускает в среднем)
-- Личные встречи (H2H) если есть
-ЕСЛИ НЕ НАШЁЛ данные — так и напиши в reasoning честно. НЕ ПРИДУМЫВАЙ статистику.
-
-ШАГ 2 — ОЦЕНКА МАТЧЕЙ.
-На основе РЕАЛЬНО найденных данных оцени каждый матч и выбери ${isHigh ? '3' : '2'} с наибольшей уверенностью (>70%).
-
-МАТЧИ С КОЭФФИЦИЕНТАМИ FONBET НА ${targetDate}:
+МАТЧИ С КОЭФФИЦИЕНТАМИ FONBET И РЕАЛЬНОЙ СТАТИСТИКОЙ НА ${targetDate}:
 ${matchBlocks}
+
+${statsNote}
+
+ШАГ 1 — ОЦЕНКА КАЖДОГО МАТЧА.
+На основе формы команд и коэффициентов оцени каждый матч:
+- Наиболее вероятный исход (тип ставки)
+- Уверенность 0–100 (на основе формы: серии побед/поражений, голевой статистики)
+- Матч подходит если уверенность ≥ 70
+
+ШАГ 2 — ОТБОР ЛУЧШИХ ${isHigh ? '3' : '2'}.
+Выбери ${isHigh ? '3' : '2'} матча с наибольшей уверенностью ≥ 70.
 
 ШАГ 3 — СОСТАВЬ ЭКСПРЕСС.
 Требования:
@@ -1012,7 +1192,7 @@ ${matchBlocks}
 - В "odds" ставь ТОЧНОЕ число из коэффициентов выше
 - В "prediction": "Победа хозяев (П1)", "Победа гостей (П2)", "Ничья (X)", "Двойной шанс (1X)", "Двойной шанс (X2)", "Тотал больше 2.5 (ТБ 2.5)", "Тотал меньше 2.5 (ТМ 2.5)", "Тотал больше 3.5 (ТБ 3.5)", "Тотал меньше 3.5 (ТМ 3.5)"
 - home/away/league — ТОЧНО как в списке выше
-- В "reasoning" — только реальные факты с winrating.ru (счёт матчей, голы, форма). Если данных нет — пиши "Данные не найдены на winrating.ru"
+- В "reasoning" — конкретные факты из строк "Форма" (счета матчей, серии). Если данных нет — пиши "Статистика недоступна, выбор по коэффициентам"
 - ВСЕ поля — на русском языке
 ${oddsRequirement}
 
@@ -1033,10 +1213,15 @@ ${oddsRequirement}
   "summary": "Краткое описание экспресса на русском"
 }`
 
-  const content = await openAIRequest([
-    { role: 'system', content: 'Ты профессиональный беттинг-аналитик. Перед ответом ты ОБЯЗАН найти актуальную статистику в интернете — это твой первый шаг. ЗАПРЕЩЕНО использовать данные из памяти или обучения. Отвечай только валидным JSON на русском языке. Используй только коэффициенты из предоставленного списка.' },
+  const systemMsg = hasRealStats
+    ? 'Ты профессиональный беттинг-аналитик. Используй ТОЛЬКО реальную статистику из блока "Форма" — не выдумывай результаты матчей. Отвечай только валидным JSON на русском языке. Используй только коэффициенты из предоставленного списка.'
+    : 'Ты профессиональный беттинг-аналитик. Статистика недоступна — обосновывай через коэффициенты и силу команд. Отвечай только валидным JSON на русском языке. Используй только коэффициенты из предоставленного списка.'
+
+  const callFn = hasRealStats ? openAINoSearch : openAIRequest
+  const content = await callFn([
+    { role: 'system', content: systemMsg },
     { role: 'user', content: prompt },
-  ], true)
+  ], !hasRealStats)
 
   const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
   const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
