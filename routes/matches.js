@@ -169,7 +169,12 @@ const RU_LOGO_MAP = {
   'селтик':'Celtic','рейнджерс':'Rangers',
 }
 function translateLogoName(name) {
-  return RU_LOGO_MAP[(name || '').toLowerCase().trim()] || name
+  const key = (name || '').toLowerCase().trim()
+  if (RU_LOGO_MAP[key]) return RU_LOGO_MAP[key]
+  // Fallback: try first word ("Босния и Герцеговина" → "босния")
+  const firstWord = key.split(/\s/)[0]
+  if (firstWord && firstWord !== key && RU_LOGO_MAP[firstWord]) return RU_LOGO_MAP[firstWord]
+  return name
 }
 
 // TheSportsDB search — free, no key, returns CDN logo URL

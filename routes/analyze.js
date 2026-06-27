@@ -791,22 +791,40 @@ const RU_TO_EN_TEAMS = {
   'англия':'England','италия':'Italy','португалия':'Portugal','нидерланды':'Netherlands',
   'бельгия':'Belgium','хорватия':'Croatia','дания':'Denmark','швеция':'Sweden',
   'норвегия':'Norway','швейцария':'Switzerland','австрия':'Austria','польша':'Poland',
-  'чехия':'Czech Republic','сербия':'Serbia','греция':'Greece','турция':'Turkey',
-  'украина':'Ukraine','румыния':'Romania','венгрия':'Hungary','словакия':'Slovakia',
-  'финляндия':'Finland','шотландия':'Scotland','уэльс':'Wales','ирландия':'Ireland',
+  'чехия':'Czech Republic','чешская республика':'Czech Republic','сербия':'Serbia',
+  'греция':'Greece','турция':'Turkey','украина':'Ukraine','румыния':'Romania',
+  'венгрия':'Hungary','словакия':'Slovakia','финляндия':'Finland','шотландия':'Scotland',
+  'уэльс':'Wales','ирландия':'Ireland','северная ирландия':'Northern Ireland',
   'бразилия':'Brazil','аргентина':'Argentina','уругвай':'Uruguay','чили':'Chile',
-  'колумбия':'Colombia','мексика':'Mexico','сша':'USA','канада':'Canada',
-  'япония':'Japan','южная корея':'South Korea','австралия':'Australia',
+  'колумбия':'Colombia','мексика':'Mexico','сша':'USA','соединённые штаты':'USA',
+  'канада':'Canada','япония':'Japan','южная корея':'South Korea',
+  'республика корея':'South Korea','австралия':'Australia',
   'египет':'Egypt','марокко':'Morocco','сенегал':'Senegal','нигерия':'Nigeria',
   'камерун':'Cameroon','гана':'Ghana','алжир':'Algeria','тунис':'Tunisia',
   'иран':'Iran','саудовская аравия':'Saudi Arabia','катар':'Qatar',
-  'дания':'Denmark','польша':'Poland','венгрия':'Hungary',
   'гаити':'Haiti','новая зеландия':'New Zealand','н.зеландия':'New Zealand',
   'гибралтар':'Gibraltar','филиппины':'Philippines','гуам':'Guam',
   'албания':'Albania','израиль':'Israel','конго':'Congo','др конго':'DR Congo',
+  'демократическая республика конго':'DR Congo','дем. республика конго':'DR Congo',
   'нигерия':'Nigeria','эквадор':'Ecuador','парагвай':'Paraguay','боливия':'Bolivia',
   'перу':'Peru','венесуэла':'Venezuela','коста-рика':'Costa Rica','панама':'Panama',
   'ямайка':'Jamaica','куба':'Cuba','гондурас':'Honduras','сальвадор':'El Salvador',
+  'босния':'Bosnia and Herzegovina','босния и герцеговина':'Bosnia and Herzegovina',
+  'северная македония':'North Macedonia','черногория':'Montenegro',
+  'словения':'Slovenia','латвия':'Latvia','литва':'Lithuania','эстония':'Estonia',
+  'узбекистан':'Uzbekistan','казахстан':'Kazakhstan','азербайджан':'Azerbaijan',
+  'ирак':'Iraq','сирия':'Syria','иордания':'Jordan','оаэ':'United Arab Emirates',
+  'объединённые арабские эмираты':'United Arab Emirates',
+  'китай':'China','индия':'India','таиланд':'Thailand','вьетнам':'Vietnam',
+  'нигер':'Niger','мали':'Mali','буркина-фасо':'Burkina Faso',
+  'кот-д\'ивуар':'Ivory Coast','берег слоновой кости':'Ivory Coast',
+  'конго':'Congo DR','конго др':'DR Congo',
+  'новая каледония':'New Caledonia','таити':'Tahiti',
+  'сьерра-леоне':'Sierra Leone','зимбабве':'Zimbabwe','замбия':'Zambia',
+  'ангола':'Angola','мозамбик':'Mozambique','танзания':'Tanzania',
+  'уганда':'Uganda','кения':'Kenya','эфиопия':'Ethiopia',
+  'ливан':'Lebanon','оман':'Oman','кувейт':'Kuwait','бахрейн':'Bahrain',
+  'индонезия':'Indonesia','малайзия':'Malaysia','сингапур':'Singapore',
 }
 
 const RU_TO_EN_CLUBS = {
@@ -836,7 +854,14 @@ const RU_TO_EN_CLUBS = {
 
 function translateTeamToEn(name) {
   const key = (name || '').toLowerCase().trim()
-  return RU_TO_EN_CLUBS[key] || RU_TO_EN_TEAMS[key] || name
+  if (RU_TO_EN_CLUBS[key]) return RU_TO_EN_CLUBS[key]
+  if (RU_TO_EN_TEAMS[key]) return RU_TO_EN_TEAMS[key]
+  // Fallback: try first word (e.g. "Босния и Герцеговина" → "босния" → "Bosnia and Herzegovina")
+  const firstWord = key.split(/\s/)[0]
+  if (firstWord && firstWord !== key && (RU_TO_EN_CLUBS[firstWord] || RU_TO_EN_TEAMS[firstWord])) {
+    return RU_TO_EN_CLUBS[firstWord] || RU_TO_EN_TEAMS[firstWord]
+  }
+  return name
 }
 
 function parseAllSportsFixtures(fixtures, teamKey) {
