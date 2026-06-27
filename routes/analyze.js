@@ -850,6 +850,49 @@ const RU_TO_EN_CLUBS = {
   'шахтер':'Shakhtar Donetsk','шахтёр':'Shakhtar Donetsk','динамо киев':'Dynamo Kyiv',
   'селтик':'Celtic','рейнджерс':'Rangers',
   'динамо махачкала':'Dinamo Makhachkala',
+  // ── Чехия ────────────────────────────────────────────────────────────────────
+  'виктория пльзень':'Viktoria Plzen','виктория':'Viktoria Plzen',
+  'слavia прага':'Slavia Prague','славия прага':'Slavia Prague','славия':'Slavia Prague',
+  'спарта прага':'Sparta Prague','спарта':'Sparta Prague',
+  'млада болеслав':'Mlada Boleslav','сигма оломоуц':'Sigma Olomouc',
+  'теплице':'Teplice','яблонец':'Jablonec','богемианс':'Bohemians 1905',
+  'збройовка брно':'Zbrojovka Brno','брно':'FC Zbrojovka',
+  // ── Польша ───────────────────────────────────────────────────────────────────
+  'легия':'Legia Warsaw','легия варшава':'Legia Warsaw',
+  'лех познань':'Lech Poznan','лех':'Lech Poznan',
+  'ракув':'Rakow Czestochowa','ракув ченстохова':'Rakow Czestochowa',
+  'вислa краков':'Wisla Krakow','вислa':'Wisla Krakow','висла':'Wisla Krakow',
+  'погонь щецин':'Pogon Szczecin','погонь':'Pogon Szczecin',
+  'заглебе любин':'Zaglebie Lubin','корона кельце':'Korona Kielce',
+  // ── Нидерланды ───────────────────────────────────────────────────────────────
+  'псв':'PSV','псв эйндховен':'PSV Eindhoven',
+  'фейеноорд':'Feyenoord','утрехт':'FC Utrecht','твенте':'FC Twente',
+  'витесс':'Vitesse','херенвен':'SC Heerenveen','алкмар':'AZ Alkmaar',
+  'гронинген':'FC Groningen','спарта роттердам':'Sparta Rotterdam',
+  // ── Бельгия ──────────────────────────────────────────────────────────────────
+  'брюгге':'Club Brugge','клуб брюгге':'Club Brugge',
+  'андерлехт':'Anderlecht','стандард льеж':'Standard Liege',
+  'гент':'Gent','антверпен':'Antwerp','юнион сент-жиллуаз':'Union SG',
+  // ── Австрия ──────────────────────────────────────────────────────────────────
+  'рб зальцбург':'RB Salzburg','зальцбург':'RB Salzburg',
+  'рапид вена':'Rapid Wien','рапид':'Rapid Wien','аустрия вена':'Austria Wien',
+  'штурм грац':'Sturm Graz','рид':'SV Ried',
+  // ── Португалия ───────────────────────────────────────────────────────────────
+  'браги':'Braga','брага':'Braga','витория гимарайнш':'Vitoria Guimaraes',
+  'витория сетубал':'Vitoria Setubal','санта клара':'Santa Clara',
+  'маритиму':'Maritimo','пасуш де феррейра':'Pacos de Ferreira',
+  // ── Турция ───────────────────────────────────────────────────────────────────
+  'галатасарай':'Galatasaray','фенербахче':'Fenerbahce',
+  'бешикташ':'Besiktas','трабзонспор':'Trabzonspor','башакшехир':'Basaksehir',
+  // ── Греция ───────────────────────────────────────────────────────────────────
+  'олимпиакос':'Olympiacos','паок':'PAOK','аек':'AEK Athens',
+  'панатинаикос':'Panathinaikos','арис':'Aris Thessaloniki',
+  // ── Шотландия ────────────────────────────────────────────────────────────────
+  'хартс':'Heart of Midlothian','хибернян':'Hibernian','абердин':'Aberdeen',
+  // ── Украина ──────────────────────────────────────────────────────────────────
+  'металлист':'Metalist','металлист харьков':'Metalist Kharkiv',
+  'заря луганск':'Zorya Luhansk','заря':'Zorya Luhansk',
+  'ворскла':'Vorskla','днепр-1':'Dnipro-1',
 }
 
 function translateTeamToEn(name) {

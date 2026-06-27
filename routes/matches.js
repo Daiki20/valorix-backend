@@ -167,6 +167,22 @@ const RU_LOGO_MAP = {
   'брайтон':'Brighton','астон вилла':'Aston Villa','лестер':'Leicester City',
   'фулхэм':'Fulham','вулверхэмптон':'Wolverhampton','борнмут':'Bournemouth',
   'селтик':'Celtic','рейнджерс':'Rangers',
+  // ── Чехия / Польша / Нидерланды / Австрия ────────────────────────────────────
+  'виктория пльзень':'Viktoria Plzen','виктория':'Viktoria Plzen',
+  'славия прага':'Slavia Prague','славия':'Slavia Prague',
+  'спарта прага':'Sparta Prague','спарта':'Sparta Prague',
+  'легия':'Legia Warsaw','легия варшава':'Legia Warsaw',
+  'лех познань':'Lech Poznan','лех':'Lech Poznan',
+  'ракув':'Rakow Czestochowa','вислa краков':'Wisla Krakow','висла':'Wisla Krakow',
+  'псв':'PSV','псв эйндховен':'PSV Eindhoven',
+  'фейеноорд':'Feyenoord','твенте':'FC Twente','алкмар':'AZ Alkmaar',
+  'брюгге':'Club Brugge','клуб брюгге':'Club Brugge','андерлехт':'Anderlecht',
+  'зальцбург':'RB Salzburg','рб зальцбург':'RB Salzburg',
+  'рапид вена':'Rapid Wien','рапид':'Rapid Wien',
+  // ── Турция / Греция ───────────────────────────────────────────────────────────
+  'галатасарай':'Galatasaray','фенербахче':'Fenerbahce',
+  'бешикташ':'Besiktas','трабзонспор':'Trabzonspor',
+  'олимпиакос':'Olympiacos','паок':'PAOK','аек':'AEK Athens',
 }
 function translateLogoName(name) {
   const key = (name || '').toLowerCase().trim()
