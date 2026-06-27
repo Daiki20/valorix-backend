@@ -1006,9 +1006,9 @@ router.post('/match-with-search', authenticate, async (req, res) => {
   const live = !!(isLive || score)
   const year = new Date().getFullYear()
 
-  // Football pre-match: try real stats from api-football.com
+  // Football: try real stats from api-football.com (pre-match + live historical context)
   let footballStats = null
-  if (sport === 'football' && !live && process.env.APIFOOTBALL_KEY) {
+  if (sport === 'football' && process.env.APIFOOTBALL_KEY) {
     const statsCk = `apifb2_${normalize(home)}_${normalize(away)}`
     const cachedSt = cacheGet(statsCk, 6 * 60 * 60 * 1000)
     if (cachedSt) { try { footballStats = JSON.parse(cachedSt) } catch {} }
@@ -1120,6 +1120,87 @@ router.post('/match-with-search', authenticate, async (req, res) => {
     },
   }
   const cfg = SPORT_CFG[sport] || SPORT_CFG.football
+
+  // ── Football LIVE + real API stats: GPT-4o with historical form + current score ─
+  if (footballStats && live) {
+    const statsBlock = buildStatsBlock(footballStats)
+    const liveStatsPrompt = `Ты профессиональный беттинг-аналитик. Матч ИДЁТ прямо сейчас — анализируй на основе реальной статистики и текущего счёта.
+
+МАТЧ: ${home} vs ${away}
+ТУРНИР: ${league || 'не указан'}
+🔴 ТЕКУЩИЙ СЧЁТ: ${score}${minute ? ` (${minute} мин)` : ''}
+${oddsBlock}
+
+РЕАЛЬНАЯ СТАТИСТИКА ИЗ API (последние матчи):
+${statsBlock}
+
+На основе текущего счёта и исторической формы:
+- Оцени вероятность разных исходов до конца матча
+- Учти оставшееся время${minute ? ` (~${90 - parseInt(minute, 10) || 45} мин)` : ''}
+- Какая команда исторически сильнее в подобных ситуациях
+
+Ответь СТРОГО в JSON (без markdown):
+{
+  "verdict": "конкретный вердикт с учётом счёта ${score} и формы команд",
+  "summary": "3-4 предложения: текущий счёт, что говорит статистика, прогноз",
+  "confidence": число 50-80,
+  "risk": "low | medium | high",
+  "fairOdds": "справедливый коэф на исход",
+  "bookOdds": null,
+  "value": 0,
+  "reasons": ["факт о форме с цифрой", "что значит текущий счёт", "факт 3"],
+  "extraBets": [
+    {"type": "ставка на ДО КОНЦА матча", "confidence": число, "reason": "обоснование"},
+    {"type": "ставка", "confidence": число, "reason": "обоснование"}
+  ],
+  "bestOdds": [],
+  "dataWarning": null
+}`
+
+    try {
+      const raw = await callOpenAI([
+        { role: 'system', content: 'Ты профессиональный беттинг-аналитик. Матч идёт прямо сейчас. Используй ТОЛЬКО предоставленную статистику и текущий счёт — не выдумывай. Отвечай ТОЛЬКО валидным JSON без markdown.' },
+        { role: 'user', content: liveStatsPrompt },
+      ], 1200)
+
+      const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
+      let analysis
+      try { analysis = JSON.parse(cleaned) }
+      catch { const m = raw.match(/\{[\s\S]*\}/); analysis = m ? JSON.parse(m[0]) : null }
+
+      if (!analysis) throw new Error('Parse failed')
+
+      const stripMd = s => {
+        if (s === null || s === undefined) return s
+        const str = typeof s === 'object' ? JSON.stringify(s) : String(s)
+        return str.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\s{2,}/g, ' ').trim()
+      }
+      const forceStr = (s, fb = '') => (s === null || s === undefined || typeof s === 'object') ? fb : String(s)
+
+      const result = {
+        verdict:    stripMd(analysis.verdict)    || `Анализ счёта ${score}`,
+        summary:    stripMd(analysis.summary)    || '',
+        confidence: Math.min(85, Math.max(50, Number(analysis.confidence) || 65)),
+        risk:       forceStr(analysis.risk, 'medium'),
+        fairOdds:   forceStr(analysis.fairOdds, '—') || '—',
+        bookOdds:   null,
+        value:      Number(analysis.value) || 0,
+        reasons:    Array.isArray(analysis.reasons)   ? analysis.reasons.map(r => stripMd(r))   : [],
+        extraBets:  Array.isArray(analysis.extraBets) ? analysis.extraBets.map(b => ({ ...b, type: stripMd(b.type), reason: stripMd(b.reason) })) : [],
+        bestOdds:   [],
+        dataWarning: null,
+        searchUsed: false,
+        homeLogo: footballStats.homeTeam.logo || null,
+        awayLogo: footballStats.awayTeam.logo || null,
+      }
+
+      console.log(`[match-with-search] 🔴 LIVE+STATS ${home} vs ${away} ${score}: "${result.verdict}"`)
+      return res.json(result)
+    } catch (liveErr) {
+      console.warn('[match-with-search] live stats path failed, falling back:', liveErr.message)
+    }
+  }
+  // ── End football live stats path ──────────────────────────────────────────
 
   // ── Football + real API stats: use gpt-4o with real data ──────────────────
   if (footballStats && !live) {
