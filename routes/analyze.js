@@ -1935,4 +1935,16 @@ router.post('/ai-proxy', authenticate, async (req, res) => {
   }
 })
 
+// GET /analyze/cache-reset — clear all web-search analysis cache (forces re-fetch with real stats)
+router.get('/cache-reset', (req, res) => {
+  try {
+    const wsearch = db.prepare("DELETE FROM analysis_cache WHERE cache_key LIKE 'wsearch_%'").run()
+    const apifb   = db.prepare("DELETE FROM analysis_cache WHERE cache_key LIKE 'apifb%'").run()
+    console.log(`[cache-reset] deleted ${wsearch.changes} wsearch + ${apifb.changes} apifb entries`)
+    res.json({ ok: true, deleted: { wsearch: wsearch.changes, apifb: apifb.changes } })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message })
+  }
+})
+
 module.exports = router
