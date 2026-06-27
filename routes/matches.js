@@ -110,6 +110,36 @@ function getNBALogo(name) {
   return abbr ? `https://a.espncdn.com/i/teamlogos/nba/500/${abbr}.png` : null
 }
 
+// Russian → English team name for TheSportsDB logo lookup
+const RU_LOGO_MAP = {
+  'зенит':'Zenit','спартак':'Spartak Moscow','спартак москва':'Spartak Moscow',
+  'цска':'CSKA Moscow','цска москва':'CSKA Moscow','локомотив':'Lokomotiv Moscow',
+  'динамо':'Dinamo Moscow','динамо москва':'Dinamo Moscow','краснодар':'Krasnodar',
+  'рубин':'Rubin Kazan','рубин казань':'Rubin Kazan','ростов':'FC Rostov',
+  'крылья советов':'Krylia Sovetov','ахмат':'Akhmat Grozny','ахмат грозный':'Akhmat Grozny',
+  'урал':'FC Ural','пари нн':'Pari Nizhny Novgorod','нижний новгород':'Pari Nizhny Novgorod',
+  'факел':'FC Fakel','факел воронеж':'FC Fakel','химки':'FK Khimki',
+  'оренбург':'FC Orenburg','сочи':'FC Sochi','ротор':'FC Rotor','ротор волгоград':'FC Rotor',
+  'манчестер сити':'Manchester City','манчестер юнайтед':'Manchester United',
+  'реал мадрид':'Real Madrid','барселона':'Barcelona','ливерпуль':'Liverpool',
+  'челси':'Chelsea','арсенал':'Arsenal','тоттенхэм':'Tottenham',
+  'бавария':'Bayern Munich','боруссия дортмунд':'Borussia Dortmund','боруссия':'Borussia Dortmund',
+  'ювентус':'Juventus','интер':'Inter Milan','милан':'AC Milan','наполи':'Napoli',
+  'пsg':'PSG','псж':'PSG','пари сен-жермен':'PSG',
+  'атлетико':'Atletico Madrid','атлетико мадрид':'Atletico Madrid',
+  'севилья':'Sevilla','валенсия':'Valencia','бетис':'Real Betis',
+  'аякс':'Ajax','порту':'Porto','бенфика':'Benfica','спортинг':'Sporting CP',
+  'шахтёр':'Shakhtar Donetsk','шахтер':'Shakhtar Donetsk',
+  'динамо киев':'Dynamo Kyiv','лейпциг':'RB Leipzig','байер':'Bayer Leverkusen',
+  'фиорентина':'Fiorentina','рома':'AS Roma','лацио':'Lazio',
+  'вест хэм':'West Ham','эвертон':'Everton','ньюкасл':'Newcastle',
+  'брайтон':'Brighton','астон вилла':'Aston Villa','лестер':'Leicester City',
+  'фулхэм':'Fulham','вулверхэмптон':'Wolverhampton','борнмут':'Bournemouth',
+}
+function translateLogoName(name) {
+  return RU_LOGO_MAP[(name || '').toLowerCase().trim()] || name
+}
+
 // TheSportsDB search — free, no key, returns CDN logo URL
 function thesportsdbSearchTeam(name) {
   return new Promise((resolve) => {
@@ -166,7 +196,8 @@ async function lookupTeamImg(name, isNBA = false) {
 
   // Others: TheSportsDB (free, no auth, works from Railway)
   try {
-    const data = await thesportsdbSearchTeam(name)
+    const nameEn = translateLogoName(name)
+    const data = await thesportsdbSearchTeam(nameEn)
     const teams = data?.teams || []
     if (!teams.length) { _setLogoCache(key, null, false); return null }
     const team = teams[0]
