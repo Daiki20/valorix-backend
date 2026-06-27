@@ -1218,6 +1218,7 @@ ${oddsRequirement}
     : 'Ты профессиональный беттинг-аналитик. Статистика недоступна — обосновывай через коэффициенты и силу команд. Отвечай только валидным JSON на русском языке. Используй только коэффициенты из предоставленного списка.'
 
   const callFn = hasRealStats ? openAINoSearch : openAIRequest
+  console.log(`[express/gpt] ${type} — ${hasRealStats ? '✅ gpt-4o (no search, real stats)' : '🔍 gpt-4o-search-preview (fallback)'}`)
   const content = await callFn([
     { role: 'system', content: systemMsg },
     { role: 'user', content: prompt },
