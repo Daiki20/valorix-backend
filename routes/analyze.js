@@ -83,6 +83,7 @@ function callOpenAI(messages, max_tokens = 1500) {
       hostname: 'api.openai.com',
       path: '/v1/chat/completions',
       method: 'POST',
+      timeout: 60000,
       headers: {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
@@ -93,16 +94,60 @@ function callOpenAI(messages, max_tokens = 1500) {
       let data = ''
       res.on('data', chunk => { data += chunk })
       res.on('end', () => {
-        if (res.statusCode !== 200) { reject(new Error(`OpenAI ${res.statusCode}: ${data}`)); return }
+        if (res.statusCode !== 200) { reject(new Error(`OpenAI ${res.statusCode}: ${data.slice(0, 300)}`)); return }
         try {
           const parsed = JSON.parse(data)
           const content = parsed?.choices?.[0]?.message?.content
           if (!content) throw new Error('Empty response')
           resolve(content)
-        } catch { reject(new Error('OpenAI parse error')) }
+        } catch (e) { reject(new Error(`OpenAI parse error: ${e.message}`)) }
       })
     })
     req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('OpenAI timeout')) })
+    req.write(payload)
+    req.end()
+  })
+}
+
+// Vision-only call — no response_format constraint (needed for image inputs)
+function callOpenAIVision(messages, max_tokens = 800) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify({
+      model: 'gpt-4o',
+      messages,
+      max_tokens,
+    })
+    const options = {
+      hostname: 'api.openai.com',
+      path: '/v1/chat/completions',
+      method: 'POST',
+      timeout: 90000,
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+    }
+    const req = https.request(options, (res) => {
+      let data = ''
+      res.on('data', chunk => { data += chunk })
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          console.error('[vision] OpenAI error', res.statusCode, data.slice(0, 400))
+          reject(new Error(`OpenAI vision ${res.statusCode}: ${data.slice(0, 200)}`))
+          return
+        }
+        try {
+          const parsed = JSON.parse(data)
+          const content = parsed?.choices?.[0]?.message?.content
+          if (!content) throw new Error('Empty vision response')
+          resolve(content)
+        } catch (e) { reject(new Error(`OpenAI vision parse error: ${e.message}`)) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(); reject(new Error('OpenAI vision timeout')) })
     req.write(payload)
     req.end()
   })
@@ -2001,18 +2046,18 @@ router.post('/dota-draft', authenticate, async (req, res) => {
   }
 
   try {
-    // Step 1: extract heroes using GPT-4o Vision
-    const extractRaw = await callOpenAI([{
+    // Step 1: extract heroes using GPT-4o Vision (no json_object constraint)
+    const extractRaw = await callOpenAIVision([{
       role: 'user',
       content: [
         { type: 'image_url', image_url: { url: imageBase64, detail: 'high' } },
-        { type: 'text', text: `This is a Dota 2 professional match draft screen. Teams: "${home}" vs "${away}".
-Extract all picked and banned heroes. Use standard English hero names (e.g. "Anti-Mage", "Crystal Maiden").
-Return ONLY valid JSON:
-{"home_heroes":["Hero1","Hero2","Hero3","Hero4","Hero5"],"away_heroes":["Hero1","Hero2","Hero3","Hero4","Hero5"],"bans":["Ban1","Ban2"]}
-If a slot is empty/not yet picked, omit it. The team on the LEFT or GREEN side is usually Radiant. Match team names if visible.` },
+        { type: 'text', text: `This is a Dota 2 professional match. Teams: "${home}" vs "${away}".
+Look for hero picks and bans. Use standard English hero names (e.g. "Anti-Mage", "Crystal Maiden").
+Reply with JSON only, no markdown:
+{"home_heroes":["Hero1","Hero2"],"away_heroes":["Hero1","Hero2"],"bans":["Ban1"]}
+If you cannot see a draft screen, return: {"home_heroes":[],"away_heroes":[],"bans":[]}` },
       ],
-    }], 600)
+    }], 800)
 
     let draft = {}
     try {
