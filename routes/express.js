@@ -1104,7 +1104,16 @@ async function fetchStatsForExpress(home, away) {
 async function generateExpress(targetDate, type = 'standard') {
   // Берём матчи из Fonbet (тот же список что на странице анализа)
   const { getFonbetFootballMatches } = require('./matches')
-  const matches = await getFonbetFootballMatches(targetDate)
+  const allMatches = await getFonbetFootballMatches(targetDate)
+
+  // Filter out reserve/B-teams (names ending with " 2", "II", "B", "Next Pro" leagues)
+  const RESERVE_RE = /\s+(2|ii|b)$/i
+  const RESERVE_LEAGUE_RE = /next\s*pro|division\s*b|second\s*div/i
+  const matches = allMatches.filter(m =>
+    !RESERVE_RE.test(m.home.trim()) &&
+    !RESERVE_RE.test(m.away.trim()) &&
+    !RESERVE_LEAGUE_RE.test(m.league || '')
+  )
 
   if (matches.length < 2) {
     throw new Error(`Нет матчей Fonbet на ${targetDate}. Попробуйте перегенерировать позже.`)
@@ -1178,6 +1187,8 @@ ${matchBlocks}
 ${statsNote}
 
 ШАГ 1 — ОЦЕНКА КАЖДОГО МАТЧА.
+ПРИОРИТЕТ: матчи со строками "Форма ..." имеют реальные данные — выбирай из них в первую очередь.
+Матчи БЕЗ строк "Форма" — брать ТОЛЬКО если не хватает матчей с данными.
 На основе формы команд и коэффициентов оцени каждый матч:
 - Наиболее вероятный исход (тип ставки)
 - Уверенность 0–100 (на основе формы: серии побед/поражений, голевой статистики)
