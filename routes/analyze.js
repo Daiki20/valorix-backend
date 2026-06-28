@@ -2046,18 +2046,35 @@ router.post('/dota-draft', authenticate, async (req, res) => {
   }
 
   try {
-    // Step 1: extract heroes using GPT-4o Vision (no json_object constraint)
+    // Step 1: extract heroes + live game state using GPT-4o Vision
     const extractRaw = await callOpenAIVision([{
       role: 'user',
       content: [
         { type: 'image_url', image_url: { url: imageBase64, detail: 'high' } },
-        { type: 'text', text: `This is a Dota 2 professional match. Teams: "${home}" vs "${away}".
-Look for hero picks and bans. Use standard English hero names (e.g. "Anti-Mage", "Crystal Maiden").
+        { type: 'text', text: `This is a Dota 2 professional match screenshot. Teams: "${home}" vs "${away}".
+
+Extract everything visible. Use standard English hero names.
 Reply with JSON only, no markdown:
-{"home_heroes":["Hero1","Hero2"],"away_heroes":["Hero1","Hero2"],"bans":["Ban1"]}
-If you cannot see a draft screen, return: {"home_heroes":[],"away_heroes":[],"bans":[]}` },
+{
+  "home_heroes": ["Hero1","Hero2","Hero3","Hero4","Hero5"],
+  "away_heroes": ["Hero1","Hero2","Hero3","Hero4","Hero5"],
+  "bans": ["Ban1","Ban2"],
+  "game_time": "23:45 or null",
+  "home_gold": 42000,
+  "away_gold": 38000,
+  "gold_advantage": "+4000 ${home} or null",
+  "home_kills": 12,
+  "away_kills": 8,
+  "home_towers": 2,
+  "away_towers": 5,
+  "home_rax": 0,
+  "away_rax": 0,
+  "roshan_killed": 1,
+  "notes": "any other visible info: net worth graph, aegis holder, smoke, objectives"
+}
+If a field is not visible, use null. If no draft visible, use empty arrays.` },
       ],
-    }], 800)
+    }], 1000)
 
     let draft = {}
     try {
@@ -2074,49 +2091,71 @@ If you cannot see a draft screen, return: {"home_heroes":[],"away_heroes":[],"ba
 ${away}: ${awayHeroes.join(', ') || '—'}
 Баны: ${bans.join(', ') || '—'}`
 
-    // Step 2: analyze draft with GPT-4o
-    const analysisPrompt = `Ты — профессиональный аналитик Dota 2 с многолетним опытом разбора профессиональных матчей.
+    // Build live game state block from Vision extraction
+    const gameStateLines = []
+    if (draft.game_time)     gameStateLines.push(`Время игры: ${draft.game_time}`)
+    if (draft.home_kills != null && draft.away_kills != null)
+      gameStateLines.push(`Убийства: ${home} ${draft.home_kills} — ${draft.away_kills} ${away}`)
+    if (draft.gold_advantage) gameStateLines.push(`Преимущество по золоту: ${draft.gold_advantage}`)
+    else if (draft.home_gold != null && draft.away_gold != null)
+      gameStateLines.push(`Золото: ${home} ${draft.home_gold} — ${draft.away_gold} ${away}`)
+    if (draft.home_towers != null && draft.away_towers != null)
+      gameStateLines.push(`Вышки снесены: ${home} потерял ${draft.home_towers}, ${away} потерял ${draft.away_towers}`)
+    if (draft.home_rax != null && draft.away_rax != null && (draft.home_rax > 0 || draft.away_rax > 0))
+      gameStateLines.push(`Бараки: ${home} потерял ${draft.home_rax}, ${away} потерял ${draft.away_rax}`)
+    if (draft.roshan_killed) gameStateLines.push(`Рошан убит: ${draft.roshan_killed} раз`)
+    if (draft.notes)         gameStateLines.push(`Доп. инфо: ${draft.notes}`)
+    const gameStateBlock = gameStateLines.length
+      ? `\nТЕКУЩЕЕ СОСТОЯНИЕ ИГРЫ:\n${gameStateLines.join('\n')}`
+      : ''
+
+    const isLiveGame = gameStateLines.length > 0
+
+    // Step 2: analyze draft + game state with GPT-4o
+    const analysisPrompt = `Ты — профессиональный аналитик Dota 2 с многолетним опытом разбора профессиональных матчей. Отвечай СТРОГО на русском языке.
 
 МАТЧ: ${home} vs ${away}
 ТУРНИР: ${league || 'не указан'}
 
 ДРАФТ:
 ${draftBlock}
+${gameStateBlock}
 
 Проанализируй:
-
-1. ДРАФТ ${home}: синергии (комбо, тимфайт, инициация), сильные/слабые стороны, тайминги силы, соответствие мете
+1. ДРАФТ ${home}: синергии, тимфайт, инициация, тайминги силы, соответствие мете
 2. ДРАФТ ${away}: то же самое
-3. СРАВНЕНИЕ: чей драфт объективно сильнее, ключевые угрозы, кто доминирует early/mid/late
-4. ПРОГНОЗ: победитель и ключевой фактор
+${isLiveGame ? `3. ТЕКУЩАЯ СИТУАЦИЯ: кто доминирует сейчас, насколько критично преимущество по золоту/вышкам/убийствам
+4. ПРОГНОЗ: кто победит с учётом текущего состояния игры и драфтов` : `3. СРАВНЕНИЕ: чей драфт объективно сильнее, early/mid/late
+4. ПРОГНОЗ: победитель и ключевой фактор`}
 
-Ответь СТРОГО в JSON:
+Отвечай ТОЛЬКО на РУССКОМ. Ответь СТРОГО в JSON (без markdown):
 {
-  "verdict": "кто победит и почему (на основе драфта, конкретные герои)",
-  "summary": "3-4 предложения: сравнение драфтов, ключевые синергии, тайминги, прогноз",
+  "verdict": "кто победит и почему — конкретно, с именами героев и цифрами${isLiveGame ? ', с учётом текущего счёта' : ''}",
+  "summary": "3-4 предложения на русском: ${isLiveGame ? 'текущая ситуация + ' : ''}сравнение драфтов, ключевые синергии, тайминги, прогноз",
   "confidence": число 55-80,
   "risk": "low | medium | high",
-  "fairOdds": "справедливый коэф на победителя",
+  "fairOdds": "справедливый коэф",
   "bookOdds": null,
   "value": 0,
   "reasons": [
-    "ключевая синергия ${home} (конкретные герои + что делают вместе)",
+    "ключевая синергия ${home} (герои + что делают вместе)",
     "ключевая синергия ${away}",
-    "преимущество победителя с объяснением",
+    ${isLiveGame ? '"факт о текущем состоянии игры с цифрами",' : ''}
+    "преимущество победителя",
     "как должна разворачиваться игра"
   ],
   "extraBets": [
-    {"type": "Тотал карт ТБ 2.5", "confidence": число, "reason": "через сложность драфтов"},
-    {"type": "Первая кровь (${home}/${away})", "confidence": число, "reason": "кто агрессивнее по пикам"}
+    {"type": "Тотал карт ТБ/ТМ 2.5", "confidence": число, "reason": "обоснование на русском"},
+    {"type": "Победитель карты", "confidence": число, "reason": "обоснование на русском"}
   ],
   "bestOdds": [],
   "dataWarning": null
 }`
 
     const raw = await callOpenAI([
-      { role: 'system', content: 'Ты профессиональный аналитик Dota 2. Анализируй конкретно — ссылайся на героев, их синергии, таймлайн силы. Отвечай ТОЛЬКО валидным JSON без markdown.' },
+      { role: 'system', content: 'Ты профессиональный аналитик Dota 2. Отвечай СТРОГО на русском языке. Анализируй конкретно — ссылайся на героев, цифры золота, убийства, вышки. Отвечай ТОЛЬКО валидным JSON без markdown.' },
       { role: 'user', content: analysisPrompt },
-    ], 1500)
+    ], 1800)
 
     const cleaned2 = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
     let analysis
@@ -2138,7 +2177,13 @@ ${draftBlock}
       bestOdds:   [],
       dataWarning: null,
       searchUsed: false,
-      draftData: { home: homeHeroes, away: awayHeroes, bans },
+      draftData: {
+        home: homeHeroes, away: awayHeroes, bans,
+        gameTime: draft.game_time || null,
+        kills: draft.home_kills != null ? { home: draft.home_kills, away: draft.away_kills } : null,
+        gold: draft.home_gold != null ? { home: draft.home_gold, away: draft.away_gold, advantage: draft.gold_advantage } : null,
+        towers: draft.home_towers != null ? { home: draft.home_towers, away: draft.away_towers } : null,
+      },
     }
 
     console.log(`[dota-draft] ${home} vs ${away}: ${homeHeroes.length}+${awayHeroes.length} heroes → "${result.verdict}"`)
