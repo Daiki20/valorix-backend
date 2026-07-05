@@ -62,7 +62,7 @@ router.get('/stats', (req, res) => {
 
 // GET /admin/traffic — статистика по UTM источникам
 router.get('/traffic', (req, res) => {
-  const PRICES = { pack_test: 50, pack_100: 100, pack_300: 300, pack_600: 540, pack_1000: 800 }
+  const PRICES = { pack_test: 50, pack_100: 100, pack_300: 300, pack_600: 540, pack_1000: 800, pack_bonus: 600 }
 
   const regs = db.prepare(`
     SELECT COALESCE(utm_source, 'organic') as source, COUNT(*) as total,
@@ -78,12 +78,21 @@ router.get('/traffic', (req, res) => {
     GROUP BY source, p.package_id
   `).all()
 
+  // Total bonus purchases (pack_bonus) regardless of source
+  const bonusTotal = db.prepare(`
+    SELECT COUNT(*) as cnt FROM pending_payments WHERE package_id = 'pack_bonus' AND status = 'done'
+  `).get()
+
   // Aggregate revenue per source
   const revenueMap = {}
   const countMap = {}
+  const bonusMap = {}
   for (const row of payments) {
     revenueMap[row.source] = (revenueMap[row.source] || 0) + (PRICES[row.package_id] || 0) * row.cnt
     countMap[row.source]   = (countMap[row.source] || 0) + row.cnt
+    if (row.package_id === 'pack_bonus') {
+      bonusMap[row.source] = (bonusMap[row.source] || 0) + row.cnt
+    }
   }
 
   const result = regs.map(r => ({
@@ -92,9 +101,10 @@ router.get('/traffic', (req, res) => {
     today_regs: r.today,
     payments: countMap[r.source] || 0,
     revenue: revenueMap[r.source] || 0,
+    bonus_used: bonusMap[r.source] || 0,
   }))
 
-  res.json(result)
+  res.json({ rows: result, bonus_total: bonusTotal?.cnt || 0 })
 })
 
 // GET /admin/users — все пользователи
