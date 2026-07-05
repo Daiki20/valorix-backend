@@ -194,11 +194,12 @@ router.post('/verify-email', async (req, res) => {
   }
 
   const welcomeCoins = 15
+  const bonusExpiresAt = Date.now() + 60 * 60 * 1000
 
-  db.prepare('UPDATE users SET is_verified = 1, coins = ?, verification_code = NULL, verification_code_exp = NULL WHERE id = ?').run(welcomeCoins, user.id)
+  db.prepare('UPDATE users SET is_verified = 1, coins = ?, verification_code = NULL, verification_code_exp = NULL, bonus_expires_at = ? WHERE id = ?').run(welcomeCoins, bonusExpiresAt, user.id)
   db.prepare('INSERT INTO coin_transactions (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(user.id, welcomeCoins, 'bonus', 'Приветственный бонус за регистрацию')
 
-  const updated = db.prepare('SELECT id, email, username, coins, is_admin, is_blocked, is_verified FROM users WHERE id = ?').get(user.id)
+  const updated = db.prepare('SELECT id, email, username, coins, is_admin, is_blocked, is_verified, bonus_expires_at FROM users WHERE id = ?').get(user.id)
   const token = makeToken(updated.id)
   res.json({ token, user: updated })
 })

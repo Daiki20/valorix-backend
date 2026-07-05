@@ -13,7 +13,7 @@ function authenticate(req, res, next) {
   try {
     const payload = jwt.verify(token, secret)
     if (!payload?.userId) return res.status(401).json({ error: 'Недействительный токен' })
-    const user = db.prepare('SELECT id, email, username, coins, is_admin, is_blocked FROM users WHERE id = ?').get(payload.userId)
+    const user = db.prepare('SELECT id, email, username, coins, is_admin, is_blocked, bonus_expires_at FROM users WHERE id = ?').get(payload.userId)
     if (!user) return res.status(401).json({ error: 'Пользователь не найден' })
     if (user.is_blocked) return res.status(403).json({ error: 'Аккаунт заблокирован' })
     req.user = user

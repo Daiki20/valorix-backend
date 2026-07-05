@@ -90,6 +90,9 @@ if (!userCols.includes('promo_code'))    db.exec("ALTER TABLE users ADD COLUMN p
 if (!userCols.includes('utm_source'))   db.exec("ALTER TABLE users ADD COLUMN utm_source TEXT")
 if (!userCols.includes('utm_campaign')) db.exec("ALTER TABLE users ADD COLUMN utm_campaign TEXT")
 
+// Приветственный бонус — истекает через 1 час после регистрации
+if (!userCols.includes('bonus_expires_at')) db.exec("ALTER TABLE users ADD COLUMN bonus_expires_at INTEGER")
+
 const analysisCols2 = db.prepare("PRAGMA table_info(analyses)").all().map(c => c.name)
 if (!analysisCols2.includes('share_token')) {
   db.exec("ALTER TABLE analyses ADD COLUMN share_token TEXT")

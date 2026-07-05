@@ -13,6 +13,7 @@ const PACKAGES = [
   { id: 'pack_300',  coins: 300,  price: 300,  label: '300 монет',  bonus: '' },
   { id: 'pack_600',  coins: 600,  price: 540,  label: '600 монет',  bonus: 'Скидка 10%' },
   { id: 'pack_1000', coins: 1000, price: 800,  label: '1000 монет', bonus: 'Скидка 20%' },
+  { id: 'pack_bonus', coins: 1000, price: 600, label: '1000 монет', bonus: 'Приветственный −40%', welcomeOnly: true },
 ]
 
 const VALID_PROMOS = { valor: 28 } // code.toLowerCase() → bonus coins
@@ -75,6 +76,13 @@ router.post('/create-payment', authenticate, async (req, res) => {
   const { packageId, paymentMethod, promoCode } = req.body
   const pkg = PACKAGES.find(p => p.id === packageId)
   if (!pkg) return res.status(400).json({ error: 'Неверный пакет' })
+
+  if (pkg.welcomeOnly) {
+    const userRow = db.prepare('SELECT bonus_expires_at FROM users WHERE id = ?').get(req.user.id)
+    if (!userRow?.bonus_expires_at || Date.now() > userRow.bonus_expires_at) {
+      return res.status(403).json({ error: 'Приветственный бонус истёк' })
+    }
+  }
 
   const promo = resolvePromo(promoCode)
   const allowedMethods = ['bank_card', 'sbp', 'sberbank', 'tinkoff_bank']
