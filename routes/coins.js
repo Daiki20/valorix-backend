@@ -60,9 +60,9 @@ function yukassaRequest(method, path, body) {
   })
 }
 
-// GET /coins/packages
+// GET /coins/packages — welcomeOnly пакеты не возвращаем публично
 router.get('/packages', (req, res) => {
-  res.json({ packages: PACKAGES })
+  res.json({ packages: PACKAGES.filter(p => !p.welcomeOnly) })
 })
 
 // GET /coins/balance
