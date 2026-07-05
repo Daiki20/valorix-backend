@@ -129,7 +129,9 @@ router.post('/register', async (req, res) => {
   const email    = sanitizeEmail(req.body.email)
   const password = sanitizeString(req.body.password, 128)
   const username = sanitizeString(req.body.username, 50)
-  const ip       = req.ip || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || 'unknown'
+  const ip          = req.ip || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || 'unknown'
+  const utm_source   = sanitizeString(req.body.utm_source || '', 50)
+  const utm_campaign = sanitizeString(req.body.utm_campaign || '', 100)
 
   if (!email || !password) {
     return res.status(400).json({ error: 'Email и пароль обязательны' })
@@ -166,8 +168,8 @@ router.post('/register', async (req, res) => {
   const exp  = Date.now() + 15 * 60 * 1000
 
   db.prepare(
-    'INSERT INTO users (email, password_hash, username, coins, is_verified, verification_code, verification_code_exp, reg_ip) VALUES (?, ?, ?, 0, 0, ?, ?, ?)'
-  ).run(email, password_hash, username || email.split('@')[0], code, exp, ip)
+    'INSERT INTO users (email, password_hash, username, coins, is_verified, verification_code, verification_code_exp, reg_ip, utm_source, utm_campaign) VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?)'
+  ).run(email, password_hash, username || email.split('@')[0], code, exp, ip, utm_source || null, utm_campaign || null)
 
   try { await sendVerificationCode(email, code) } catch (err) { console.error('Email error:', err.message) }
 

@@ -84,7 +84,11 @@ if (!userCols.includes('verification_code_exp'))  db.exec("ALTER TABLE users ADD
 if (!userCols.includes('reg_ip')) db.exec("ALTER TABLE users ADD COLUMN reg_ip TEXT")
 
 // Промокод при регистрации
-if (!userCols.includes('promo_code')) db.exec("ALTER TABLE users ADD COLUMN promo_code TEXT")
+if (!userCols.includes('promo_code'))    db.exec("ALTER TABLE users ADD COLUMN promo_code TEXT")
+
+// UTM-источник трафика (первое касание)
+if (!userCols.includes('utm_source'))   db.exec("ALTER TABLE users ADD COLUMN utm_source TEXT")
+if (!userCols.includes('utm_campaign')) db.exec("ALTER TABLE users ADD COLUMN utm_campaign TEXT")
 
 const analysisCols2 = db.prepare("PRAGMA table_info(analyses)").all().map(c => c.name)
 if (!analysisCols2.includes('share_token')) {

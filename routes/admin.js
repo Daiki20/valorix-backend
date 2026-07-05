@@ -60,6 +60,43 @@ router.get('/stats', (req, res) => {
   res.json({ totalUsers, totalAnalyses, totalCoinsSpent, todayUsers, todayAnalyses, revenue, recentUsers })
 })
 
+// GET /admin/traffic — статистика по UTM источникам
+router.get('/traffic', (req, res) => {
+  const PRICES = { pack_test: 50, pack_100: 100, pack_300: 300, pack_600: 540, pack_1000: 800 }
+
+  const regs = db.prepare(`
+    SELECT COALESCE(utm_source, 'organic') as source, COUNT(*) as total,
+      COUNT(CASE WHEN date(created_at) = date('now') THEN 1 END) as today
+    FROM users GROUP BY source ORDER BY total DESC
+  `).all()
+
+  const payments = db.prepare(`
+    SELECT COALESCE(u.utm_source, 'organic') as source,
+      p.package_id, COUNT(*) as cnt
+    FROM pending_payments p JOIN users u ON p.user_id = u.id
+    WHERE p.status = 'done'
+    GROUP BY source, p.package_id
+  `).all()
+
+  // Aggregate revenue per source
+  const revenueMap = {}
+  const countMap = {}
+  for (const row of payments) {
+    revenueMap[row.source] = (revenueMap[row.source] || 0) + (PRICES[row.package_id] || 0) * row.cnt
+    countMap[row.source]   = (countMap[row.source] || 0) + row.cnt
+  }
+
+  const result = regs.map(r => ({
+    source: r.source,
+    registrations: r.total,
+    today_regs: r.today,
+    payments: countMap[r.source] || 0,
+    revenue: revenueMap[r.source] || 0,
+  }))
+
+  res.json(result)
+})
+
 // GET /admin/users — все пользователи
 router.get('/users', (req, res) => {
   const { search = '' } = req.query
