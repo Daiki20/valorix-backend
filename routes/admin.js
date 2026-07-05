@@ -408,4 +408,11 @@ router.post('/newsletter', authenticate, requireAdmin, async (req, res) => {
   res.json({ sent, failed, total: users.length })
 })
 
+// POST /admin/test-bonus — активирует бонус на 1 час для своего аккаунта (только admin)
+router.post('/test-bonus', authenticate, requireAdmin, (req, res) => {
+  const expires = Date.now() + 60 * 60 * 1000
+  db.prepare('UPDATE users SET bonus_expires_at = ? WHERE id = ?').run(expires, req.user.id)
+  res.json({ ok: true, bonus_expires_at: expires })
+})
+
 module.exports = router
