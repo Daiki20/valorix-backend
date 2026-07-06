@@ -236,7 +236,7 @@ async function buildReport(type) {
     header = `🤝 <b>Отчет на ${dateStr()}</b>`
   }
 
-  const [regs, analyses, expressPurchases, payments, totalUsers, openaiCost, yaSpend] = await Promise.all([
+  const [regs, analyses, expressPurchases, payments, returningPayments, totalUsers, openaiCost, yaSpend] = await Promise.all([
     db.prepare(`SELECT COUNT(*) as cnt FROM users WHERE created_at >= ? AND created_at <= ?`).get(start, end),
     db.prepare(`SELECT COUNT(*) as cnt FROM analyses WHERE created_at >= ? AND created_at <= ?`).get(start, end),
     db.prepare(`
@@ -249,12 +249,20 @@ async function buildReport(type) {
       )
     `).get(start, end, start, end, start, end),
     db.prepare(`SELECT package_id FROM pending_payments WHERE status = 'done' AND created_at >= ? AND created_at <= ?`).all(start, end),
+    db.prepare(`
+      SELECT p.package_id FROM pending_payments p
+      JOIN users u ON u.id = p.user_id
+      WHERE p.status = 'done'
+        AND p.created_at >= ? AND p.created_at <= ?
+        AND u.created_at < ?
+    `).all(start, end, start),
     db.prepare(`SELECT COUNT(*) as cnt FROM users`).get(),
     fetchOpenAICost(costFrom, costTo),
     fetchYaDirectSpend(costFrom, costTo),
   ])
 
   const revenue = payments.reduce((sum, p) => sum + (PACKAGE_PRICES[p.package_id] || 0), 0)
+  const returningRevenue = returningPayments.reduce((sum, p) => sum + (PACKAGE_PRICES[p.package_id] || 0), 0)
   const aiLine = openaiCost !== null ? `$${openaiCost.toFixed(2)}` : 'нет данных'
   const yaLine = yaSpend !== null ? `${yaSpend} ₽` : 'нет данных'
 
@@ -274,6 +282,8 @@ async function buildReport(type) {
     `💲 Прибыль: <b>${revenue} ₽</b>`,
     ``,
     `👥 Всего пользователей: <b>${totalUsers.cnt}</b>`,
+    `🔄 Пополнений старыми пользователями: <b>${returningPayments.length}</b>`,
+    `💵 Сумма от старых пользователей: <b>${returningRevenue} ₽</b>`,
   ].join('\n')
 }
 
