@@ -4,7 +4,7 @@ const db = require('./db')
 const MSK = 3 * 60 * 60 * 1000 // UTC+3
 
 const PACKAGE_PRICES = {
-  pack_test: 50, pack_100: 100, pack_300: 300, pack_600: 540, pack_1000: 800,
+  pack_test: 50, pack_100: 100, pack_300: 300, pack_600: 540, pack_1000: 800, pack_bonus: 600,
 }
 
 // ── Telegram API ──────────────────────────────────────────────────────────────
