@@ -117,7 +117,7 @@ router.get('/users', (req, res) => {
 
   const users = db.prepare(`
     SELECT u.id, u.email, u.username, u.coins, u.is_admin, u.is_blocked, u.created_at,
-           u.promo_code, COUNT(a.id) as analyses_count
+           u.promo_code, u.utm_source, u.utm_campaign, COUNT(a.id) as analyses_count
     FROM users u
     LEFT JOIN analyses a ON a.user_id = u.id
     WHERE u.email LIKE ? OR u.username LIKE ?
