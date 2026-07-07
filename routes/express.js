@@ -10,6 +10,9 @@ const EXPRESS_COST_HIGH = 149
 
 // Топ-лиги — ищем в первую очередь
 const TOP_LEAGUE_IDS = [
+  1,   // FIFA World Cup
+  4,   // UEFA Euro Championship
+  5,   // UEFA Nations League
   2,   // Champions League
   3,   // Europa League
   39,  // Premier League
@@ -24,7 +27,6 @@ const TOP_LEAGUE_IDS = [
 const EXTENDED_LEAGUE_IDS = [
   5,   // UEFA Nations League (сборные Европы)
   4,   // UEFA Euro Championship
-  1,   // FIFA World Cup
   218, // FIFA World Cup Qualifiers Europe
   848, // UEFA Conference League
   94,  // Primeira Liga (Португалия)
