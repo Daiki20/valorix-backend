@@ -1138,6 +1138,16 @@ async function generateExpress(targetDate, type = 'standard') {
       }
     }
     console.log(`[express/stats] fetched real stats for ${statsCount}/${Math.min(useMatches.length, 8)} matches`)
+
+    // Оставляем только матчи со статистикой — если таких >= 2
+    const matchesWithStats = useMatches.filter(m => statsMap[`${m.home}|${m.away}`])
+    if (matchesWithStats.length >= 2) {
+      useMatches.length = 0
+      matchesWithStats.forEach(m => useMatches.push(m))
+      console.log(`[express/stats] filtered to ${useMatches.length} matches WITH stats`)
+    } else {
+      console.log(`[express/stats] not enough stats (${matchesWithStats.length}), keeping all matches`)
+    }
   }
 
   const matchBlocks = useMatches.map((m, i) => {
