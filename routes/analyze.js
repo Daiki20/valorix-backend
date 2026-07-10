@@ -1,6 +1,7 @@
 const express = require('express')
 const router = express.Router()
 const https = require('https')
+const { getProxyAgent } = require('../utils/proxy')
 const { authenticate } = require('../middleware/auth')
 const db = require('../db')
 
@@ -45,6 +46,7 @@ function callOpenAIWithWebSearch(messages, max_tokens = 2000) {
       path: '/v1/chat/completions',
       method: 'POST',
       timeout: 45000,
+      agent: getProxyAgent('api.openai.com'),
       headers: {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
@@ -84,6 +86,7 @@ function callOpenAI(messages, max_tokens = 1500) {
       path: '/v1/chat/completions',
       method: 'POST',
       timeout: 60000,
+      agent: getProxyAgent('api.openai.com'),
       headers: {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
@@ -123,6 +126,7 @@ function callOpenAIVision(messages, max_tokens = 800) {
       path: '/v1/chat/completions',
       method: 'POST',
       timeout: 90000,
+      agent: getProxyAgent('api.openai.com'),
       headers: {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
@@ -161,6 +165,7 @@ function rapidGet(path, params = {}) {
       hostname: RAPIDAPI_HOST,
       path: fullPath,
       method: 'GET',
+      agent: getProxyAgent(RAPIDAPI_HOST),
       headers: {
         'x-rapidapi-host': RAPIDAPI_HOST,
         'x-rapidapi-key': process.env.RAPIDAPI_KEY,
@@ -194,6 +199,7 @@ function apiFootballGet(path, params = {}) {
       path: qs ? `${path}?${qs}` : path,
       method: 'GET',
       timeout: 8000,
+      agent: getProxyAgent(APIFOOTBALL_HOST),
       headers: {
         'X-RapidAPI-Key': key,
         'X-RapidAPI-Host': APIFOOTBALL_HOST,
@@ -221,6 +227,7 @@ function apiFootballDirect(path) {
       path,
       method: 'GET',
       timeout: 10000,
+      agent: getProxyAgent('v3.football.api-sports.io'),
       headers: { 'x-apisports-key': key },
     }
     const req = https.request(options, res => {
@@ -479,6 +486,7 @@ function allSportsBasketGet(queryString) {
       path: `/api/basketball/?${queryString}`,
       method: 'GET',
       timeout: 8000,
+      agent: getProxyAgent(ALLSPORTS_BASKETBALL_HOST),
       headers: {
         'X-RapidAPI-Key': key,
         'X-RapidAPI-Host': ALLSPORTS_BASKETBALL_HOST,

@@ -1,4 +1,5 @@
 const https = require('https')
+const { getProxyAgent } = require('./utils/proxy')
 const db = require('./db')
 
 const MSK = 3 * 60 * 60 * 1000 // UTC+3
@@ -18,6 +19,7 @@ function tgPost(method, payload) {
       path: `/bot${token}/${method}`,
       method: 'POST',
       timeout: 10000,
+      agent: getProxyAgent('api.telegram.org'),
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
     }
     const req = https.request(options, res => {
@@ -74,6 +76,7 @@ function fetchOpenAICost(dateFrom, dateTo) {
       path,
       method: 'GET',
       timeout: 10000,
+      agent: getProxyAgent('api.openai.com'),
       headers: { 'Authorization': `Bearer ${key}` },
     }
     const req = https.request(options, res => {

@@ -1,5 +1,6 @@
 const express = require('express')
 const https = require('https')
+const { getProxyAgent } = require('../utils/proxy')
 const db = require('../db')
 const { authenticate } = require('../middleware/auth')
 const { translateTeam } = require('../teamNames')
@@ -137,6 +138,7 @@ function openAINoSearch(messages) {
       path: '/v1/chat/completions',
       method: 'POST',
       timeout: 60000,
+      agent: getProxyAgent('api.openai.com'),
       headers: {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
@@ -174,6 +176,7 @@ function openAIRequest(messages, forcedSearch = false) {
       path: '/v1/chat/completions',
       method: 'POST',
       timeout: 60000,
+      agent: getProxyAgent('api.openai.com'),
       headers: {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
@@ -223,6 +226,7 @@ function allSportsGetPathExpress(path) {
       path,
       method: 'GET',
       timeout: 8000,
+      agent: getProxyAgent('allsportsapi2.p.rapidapi.com'),
       headers: {
         'X-RapidAPI-Key': key,
         'X-RapidAPI-Host': 'allsportsapi2.p.rapidapi.com',
@@ -269,6 +273,7 @@ function sofascoreGetExpress(path) {
       path,
       method: 'GET',
       timeout: 10000,
+      agent: getProxyAgent('api.sofascore.com'),
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'application/json',
@@ -481,6 +486,7 @@ function oddsApiGetHockey(sport) {
       hostname: 'api.the-odds-api.com',
       path: `/v4/sports/${sport}/odds/?${qs}`,
       method: 'GET', timeout: 10000,
+      agent: getProxyAgent('api.the-odds-api.com'),
       headers: { 'Accept': 'application/json' },
     }
     const req = https.request(options, res => {
@@ -989,6 +995,7 @@ function apiFootballExpress(path) {
     const options = {
       hostname: 'v3.football.api-sports.io',
       path, method: 'GET', timeout: 10000,
+      agent: getProxyAgent('v3.football.api-sports.io'),
       headers: { 'x-apisports-key': key },
     }
     const req = https.request(options, res => {
@@ -1108,14 +1115,25 @@ async function generateExpress(targetDate, type = 'standard') {
   const { getFonbetFootballMatches } = require('./matches')
   const allMatches = await getFonbetFootballMatches(targetDate)
 
-  // Filter out reserve/B-teams (names ending with " 2", "II", "B", "Next Pro" leagues)
+  // Filter out reserve/B-teams, friendlies, and weak leagues
   const RESERVE_RE = /\s+(2|ii|b)$/i
-  const RESERVE_LEAGUE_RE = /next\s*pro|division\s*b|second\s*div/i
+  const EXCLUDE_LEAGUE_RE = /next\s*pro|division\s*b|second\s*div|товарищ|friendly|friendlies/i
+
+  // Top league keywords — приоритет при сортировке
+  const TOP_LEAGUE_RE = /чм\s*202|world\s*cup|fifa|евро|euro\s*202|лига\s*чемпион|champions\s*league|europa\s*league|лига\s*конфер|conference\s*league|premier\s*league|la\s*liga|serie\s*a|bundesliga|ligue\s*1|рпл|russian\s*premier|аргенти|brazil|primera\s*divis|copa|libertad/i
+
   const matches = allMatches.filter(m =>
     !RESERVE_RE.test(m.home.trim()) &&
     !RESERVE_RE.test(m.away.trim()) &&
-    !RESERVE_LEAGUE_RE.test(m.league || '')
+    !EXCLUDE_LEAGUE_RE.test(m.league || '')
   )
+
+  // Сортируем: топ-лиги вперёд
+  matches.sort((a, b) => {
+    const aTop = TOP_LEAGUE_RE.test(a.league || '') ? 1 : 0
+    const bTop = TOP_LEAGUE_RE.test(b.league || '') ? 1 : 0
+    return bTop - aTop
+  })
 
   if (matches.length < 2) {
     throw new Error(`Нет матчей Fonbet на ${targetDate}. Попробуйте перегенерировать позже.`)

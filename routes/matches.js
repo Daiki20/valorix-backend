@@ -1,6 +1,7 @@
 const express = require('express')
 const https = require('https')
 const zlib = require('zlib')
+const { getProxyAgent } = require('../utils/proxy')
 const router = express.Router()
 const db = require('../db')
 
@@ -201,6 +202,7 @@ function thesportsdbSearchTeam(name) {
       path: `/api/v1/json/3/searchteams.php?t=${encodeURIComponent(name)}`,
       method: 'GET',
       timeout: 6000,
+      agent: getProxyAgent('www.thesportsdb.com'),
       headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
     }, res => {
       let data = ''
@@ -753,6 +755,7 @@ router.get('/team-img/:teamId', (req, res) => {
     path: `/api/v1/team/${teamId}/image`,
     method: 'GET',
     timeout: 6000,
+    agent: getProxyAgent('api.sofascore.com'),
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       'Referer': 'https://www.sofascore.com/',
@@ -799,6 +802,7 @@ function sstatsGet(path, params = {}) {
       path: `${path}?${q}`,
       method: 'GET',
       timeout: 8000,
+      agent: getProxyAgent('api.sstats.net'),
     }
     const req = https.request(options, res => {
       let data = ''
@@ -884,6 +888,7 @@ function sofascoreGet(path) {
       path,
       method: 'GET',
       timeout: 10000,
+      agent: getProxyAgent('api.sofascore.com'),
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
@@ -921,6 +926,7 @@ function rapidApiGet(host, path, apiKey) {
       path,
       method: 'GET',
       timeout: 8000,
+      agent: getProxyAgent(host),
       headers: {
         'X-RapidAPI-Key': apiKey,
         'X-RapidAPI-Host': host,
@@ -1608,6 +1614,7 @@ function oddsApiGet(sport) {
       path: `/v4/sports/${sport}/odds/?${qs}`,
       method: 'GET',
       timeout: 10000,
+      agent: getProxyAgent('api.the-odds-api.com'),
       headers: { 'Accept': 'application/json' },
     }
     const req = https.request(options, res => {
@@ -1869,6 +1876,7 @@ function pinnacleGet(path) {
       path,
       method: 'GET',
       timeout: 12000,
+      agent: getProxyAgent('pinnacle-betting-odds.p.rapidapi.com'),
       headers: {
         'X-RapidAPI-Key': key,
         'X-RapidAPI-Host': 'pinnacle-betting-odds.p.rapidapi.com',
@@ -2134,6 +2142,7 @@ function apiHockeyGet(path) {
       path,
       method: 'GET',
       timeout: 10000,
+      agent: getProxyAgent('api-hockey.p.rapidapi.com'),
       headers: {
         'X-RapidAPI-Key': key,
         'X-RapidAPI-Host': 'api-hockey.p.rapidapi.com',
@@ -2291,6 +2300,7 @@ router.get('/team-logo/:teamId', async (req, res) => {
         hostname: 'allsportsapi2.p.rapidapi.com',
         path: `/api/team/${teamId}/image`,
         method: 'GET', timeout: 6000,
+        agent: getProxyAgent('allsportsapi2.p.rapidapi.com'),
         headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'allsportsapi2.p.rapidapi.com', 'Accept': 'image/png,image/*' },
       }
       const r2 = https.request(opts, r => {
@@ -2311,6 +2321,7 @@ router.get('/team-logo/:teamId', async (req, res) => {
         hostname: 'img.sofascore.com',
         path: `/api/v1/team/${teamId}/image`,
         method: 'GET', timeout: 6000,
+        agent: getProxyAgent('img.sofascore.com'),
         headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.sofascore.com/' },
       }
       const r2 = https.request(opts, r => {
